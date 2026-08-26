@@ -188,11 +188,30 @@ final class AppState {
     /// Snaps a page point to the notes grid when grid snap is on.
     func snapIfEnabled(_ point: CGPoint) -> CGPoint {
         guard notesMode, gridSnap else { return point }
-        let pitch: CGFloat = notesPaper == .canvas ? 50 : 18
+        let pitch: CGFloat = notesPaper.isCanvas ? 50 : 18
         return CGPoint(
             x: (point.x / pitch).rounded() * pitch,
             y: (point.y / pitch).rounded() * pitch
         )
+    }
+
+    /// New Notes: ask which way the board should face, then open it.
+    func newNotesFlow() {
+        let alert = NSAlert()
+        alert.messageText = "New Notes Board"
+        alert.informativeText = "One huge zoomable page either way — pinch out to see everything, pinch in to work on a detail."
+        alert.addButton(withTitle: "Landscape")
+        alert.addButton(withTitle: "Portrait")
+        alert.addButton(withTitle: "Cancel")
+        let choice = alert.runModal()
+        let template: PaperTemplate
+        switch choice {
+        case .alertFirstButtonReturn: template = .canvas
+        case .alertSecondButtonReturn: template = .canvasPortrait
+        default: return
+        }
+        newDocument(template: template)
+        if !notesMode { toggleNotesMode() }
     }
 
     // Selection (annotation editing in Select mode)
@@ -215,7 +234,10 @@ final class AppState {
 
     // Wiring
     @ObservationIgnored weak var pdfView: ToolPDFView?
-    @ObservationIgnored weak var undoManager: UndoManager?
+    /// The document's own undo stack. Owned here — never borrowed from the
+    /// window — so registrations and ⌘Z always talk to the same manager.
+    @ObservationIgnored let documentUndoManager = UndoManager()
+    var undoManager: UndoManager? { documentUndoManager }
 
     let signatures = SignatureStore()
 

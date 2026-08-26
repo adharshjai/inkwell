@@ -85,7 +85,7 @@ extension AppState {
         bumpVersion()
         undoManager?.removeAllActions()
         flash("New \(template.displayName) document")
-        if template == .canvas {
+        if template.isCanvas {
             // Land at 100% in the top-left of the big board, not zoomed to fit.
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in
                 guard let self, let view = self.pdfView,
@@ -337,8 +337,17 @@ extension AppState {
 
     // MARK: Zoom & navigation
 
-    func zoomIn() { pdfView?.zoomIn(nil); syncZoom() }
-    func zoomOut() { pdfView?.zoomOut(nil); syncZoom() }
+    func zoomIn() {
+        pdfView?.autoScales = false
+        pdfView?.zoomIn(nil)
+        syncZoom()
+    }
+
+    func zoomOut() {
+        pdfView?.autoScales = false
+        pdfView?.zoomOut(nil)
+        syncZoom()
+    }
     func zoomFit() {
         guard let pdfView else { return }
         pdfView.autoScales = true

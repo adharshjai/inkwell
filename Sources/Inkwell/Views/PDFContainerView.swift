@@ -51,6 +51,12 @@ struct PDFContainerView: NSViewRepresentable {
         // The scroll view only exists once a document is installed.
         view.ensureScrollObserver()
         view.refreshSelectionOverlay()
+        // If keyboard focus is floating loose on the window (e.g. after a
+        // dialog or a document swap), give it to the canvas so hold-keys
+        // and Delete work immediately.
+        if let window = view.window, window.firstResponder === window, appState.hasDocument {
+            window.makeFirstResponder(view)
+        }
     }
 
     func makeCoordinator() -> Coordinator {

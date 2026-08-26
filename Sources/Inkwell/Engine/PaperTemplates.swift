@@ -11,9 +11,12 @@ import Foundation
 import CoreGraphics
 
 enum PaperTemplate: String, CaseIterable, Identifiable {
-    case blank, ruled, grid, engineering, cartesian, semilog, loglog, polar, canvas
+    case blank, ruled, grid, engineering, cartesian, semilog, loglog, polar, canvas, canvasPortrait
 
     var id: String { rawValue }
+
+    /// The one-giant-page zoomable boards.
+    var isCanvas: Bool { self == .canvas || self == .canvasPortrait }
 
     var displayName: String {
         switch self {
@@ -26,6 +29,7 @@ enum PaperTemplate: String, CaseIterable, Identifiable {
         case .loglog:      return "Log-Log"
         case .polar:       return "Polar"
         case .canvas:      return "Infinite Canvas"
+        case .canvasPortrait: return "Infinite Canvas (Portrait)"
         }
     }
 
@@ -40,6 +44,7 @@ enum PaperTemplate: String, CaseIterable, Identifiable {
         case .loglog:      return "Power laws & scaling"
         case .polar:       return "Phasors & antenna patterns"
         case .canvas:      return "Landscape board — zoom forever"
+        case .canvasPortrait: return "Tall board — zoom forever"
         }
     }
 
@@ -54,6 +59,7 @@ enum PaperTemplate: String, CaseIterable, Identifiable {
         case .loglog:      return "chart.line.uptrend.xyaxis"
         case .polar:       return "circle.circle"
         case .canvas:      return "infinity"
+        case .canvasPortrait: return "infinity"
         }
     }
 
@@ -79,6 +85,7 @@ private enum PaperRenderer {
     /// The infinite-canvas board: landscape, near the PDF-viewer size cap,
     /// meant to be zoomed 0.05x-16x rather than scrolled page to page.
     static let canvasRect = CGRect(x: 0, y: 0, width: 10000, height: 6250)
+    static let canvasPortraitRect = CGRect(x: 0, y: 0, width: 6250, height: 10000)
 
     // Shared palette. Graph papers use the gray-blue family; the
     // engineering pad keeps its traditional greens.
@@ -91,7 +98,12 @@ private enum PaperRenderer {
     private static let axisGray     = Ink(r: 0.30, g: 0.32, b: 0.36)
 
     static func render(_ template: PaperTemplate) -> Data {
-        let rect = template == .canvas ? canvasRect : pageRect
+        let rect: CGRect
+        switch template {
+        case .canvas: rect = canvasRect
+        case .canvasPortrait: rect = canvasPortraitRect
+        default: rect = pageRect
+        }
         var mediaBox = rect
         guard
             let data = CFDataCreateMutable(nil, 0),
@@ -118,7 +130,8 @@ private enum PaperRenderer {
         case .semilog:     drawSemilog(ctx)
         case .loglog:      drawLogLog(ctx)
         case .polar:       drawPolar(ctx)
-        case .canvas:      drawCanvas(ctx)
+        case .canvas:      drawCanvas(ctx, in: canvasRect)
+        case .canvasPortrait: drawCanvas(ctx, in: canvasPortraitRect)
         }
     }
 
@@ -126,8 +139,7 @@ private enum PaperRenderer {
 
     /// Two-level grid that stays legible from 0.05x (whole board) to 16x
     /// (deep zoom): minors every 100 pt, majors every 500 pt.
-    private static func drawCanvas(_ ctx: CGContext) {
-        let rect = canvasRect
+    private static func drawCanvas(_ ctx: CGContext, in rect: CGRect) {
         var minors: [(CGPoint, CGPoint)] = []
         var majors: [(CGPoint, CGPoint)] = []
         var x: CGFloat = 0

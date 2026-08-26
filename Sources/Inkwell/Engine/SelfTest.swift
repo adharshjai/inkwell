@@ -17,6 +17,7 @@ enum SelfTest {
         testTypesetLayout()
         testTypesetInk()
         testShapeRecognizer()
+        testUndoRedo()
         testPaperTemplates()
         testStamps()
         testInkConvention()
@@ -293,6 +294,70 @@ enum SelfTest {
         check(ShapeRecognizer.beautify(circle) != nil, "beautify emits paths")
     }
 
+    // MARK: Undo / redo (through the app's own manager)
+
+    /// NSUndoManager closes its per-event group when the runloop turns;
+    /// headless code must turn it explicitly, like the app's event loop does.
+    private static func settle() {
+        RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+    }
+
+    private static func testUndoRedo() {
+        print("Undo/redo:")
+        let state = AppState()
+        guard let doc = PDFDocument(data: PaperTemplate.blank.pageData()),
+              let page = doc.page(at: 0) else {
+            check(false, "blank doc")
+            return
+        }
+        state.document = doc
+
+        let points = stride(from: 0, through: 60, by: 4).map { t in CGPoint(x: 100 + t, y: 200) }
+        guard let stroke = Annotations.makeStroke(points: points, color: .black, width: 4) else {
+            check(false, "stroke builds")
+            return
+        }
+        Annotations.add(stroke, to: page, state: state, actionName: "Draw")
+        settle()
+        check(page.annotations.count == 1, "stroke lands on page")
+        check(state.documentUndoManager.canUndo, "undo is registered on the app's own manager")
+
+        state.performUndo()
+        settle()
+        check(page.annotations.isEmpty, "⌘Z removes the stroke")
+        check(state.documentUndoManager.canRedo, "redo is available after undo")
+
+        state.performRedo()
+        settle()
+        check(page.annotations.count == 1, "⇧⌘Z brings the stroke back")
+
+        // Group move undo.
+        let before = stroke.bounds.origin
+        Annotations.translate(stroke, by: CGPoint(x: 30, y: -12))
+        Annotations.registerGroupMove(of: [stroke], totalDelta: CGPoint(x: 30, y: -12), state: state)
+        settle()
+        state.performUndo()
+        settle()
+        check(
+            abs(stroke.bounds.origin.x - before.x) < 0.01 && abs(stroke.bounds.origin.y - before.y) < 0.01,
+            "move undo restores position"
+        )
+
+        // Resize undo.
+        let geometry = Annotations.Geometry(of: stroke)
+        let doubled = CGRect(
+            x: stroke.bounds.minX, y: stroke.bounds.minY,
+            width: stroke.bounds.width * 2, height: stroke.bounds.height * 2
+        )
+        Annotations.applyScale(stroke, from: geometry, to: doubled)
+        Annotations.registerResize(of: stroke, before: geometry, state: state)
+        settle()
+        check(abs(stroke.bounds.width - doubled.width) < 0.01, "resize applies")
+        state.performUndo()
+        settle()
+        check(abs(stroke.bounds.width - geometry.bounds.width) < 0.01, "resize undo restores geometry")
+    }
+
     // MARK: Paper
 
     private static func testPaperTemplates() {
@@ -303,9 +368,12 @@ enum SelfTest {
                 check(false, template.rawValue, "not a loadable PDF")
                 continue
             }
-            let expected = template == .canvas
-                ? CGSize(width: 10000, height: 6250)
-                : CGSize(width: 612, height: 792)
+            let expected: CGSize
+            switch template {
+            case .canvas: expected = CGSize(width: 10000, height: 6250)
+            case .canvasPortrait: expected = CGSize(width: 6250, height: 10000)
+            default: expected = CGSize(width: 612, height: 792)
+            }
             let bounds = page.bounds(for: .mediaBox)
             check(
                 doc.pageCount == 1

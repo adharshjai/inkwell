@@ -127,9 +127,15 @@ final class ToolPDFView: PDFView {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        appState?.undoManager = undoManager
         window?.acceptsMouseMovedEvents = true
         ensureScrollObserver()
+    }
+
+    /// Manual zoom must stick: leaving autoScales on lets any relayout
+    /// (like the endless page growing) snap the zoom back to fit.
+    override func magnify(with event: NSEvent) {
+        autoScales = false
+        super.magnify(with: event)
     }
 
     override func updateTrackingAreas() {
@@ -170,7 +176,7 @@ final class ToolPDFView: PDFView {
     /// is one giant page instead — it grows by zooming, not appending.
     private func autoExtendIfNeeded() {
         guard let appState, appState.notesMode, !isAutoExtending,
-              appState.notesPaper != .canvas,
+              !appState.notesPaper.isCanvas,
               let doc = document, doc === appState.document,
               let docView = documentView else { return }
         let visible = docView.visibleRect
@@ -207,6 +213,12 @@ final class ToolPDFView: PDFView {
 
     override func mouseDown(with event: NSEvent) {
         guard let appState else { return super.mouseDown(with: event) }
+
+        // Every click claims keyboard focus so Delete and the hold-to-draw
+        // keys always work right after interacting with the canvas.
+        if window?.firstResponder !== self, textEditor == nil {
+            window?.makeFirstResponder(self)
+        }
 
         // Any click while editing text commits the edit first.
         if textEditor != nil { commitTextEditing() }

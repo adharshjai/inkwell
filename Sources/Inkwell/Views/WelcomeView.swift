@@ -31,8 +31,7 @@ struct WelcomeView: View {
                     .keyboardShortcut("o")
 
                     Button {
-                        appState.newDocument(template: .canvas)
-                        if !appState.notesMode { appState.toggleNotesMode() }
+                        appState.newNotesFlow()
                     } label: {
                         Label("New Notes", systemImage: "scribble.variable")
                             .frame(minWidth: 104)
@@ -105,8 +104,17 @@ struct WelcomeView: View {
 
             Spacer()
             Spacer()
+
+            Text("Inkwell \(AppInfo.version)")
+                .font(.caption2)
+                .foregroundStyle(.quaternary)
+                .padding(.bottom, 10)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(WindowBackgroundShapeStyle.windowBackground)
     }
+}
+
+enum AppInfo {
+    static let version = "1.2"
 }
