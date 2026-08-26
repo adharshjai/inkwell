@@ -128,15 +128,22 @@ final class ToolPDFView: PDFView {
 
     /// One re-render nudge shortly after zooming settles — never per frame,
     /// which would re-rasterize the whole page continuously during a pinch.
+    /// `annotationsChanged(on:)` is the critical call: without it PDFKit keeps
+    /// upscaling its cached annotation bitmaps, so ink turns pixelated after
+    /// any zoom.
     private var renderNudge: DispatchWorkItem?
 
     private func scheduleRenderNudge() {
         renderNudge?.cancel()
         let work = DispatchWorkItem { [weak self] in
-            self?.documentView?.needsDisplay = true
+            guard let self else { return }
+            for page in self.visiblePages {
+                self.annotationsChanged(on: page)
+            }
+            self.documentView?.needsDisplay = true
         }
         renderNudge = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.22, execute: work)
     }
 
     /// Manual zoom must stick: leaving autoScales on lets any relayout
@@ -175,6 +182,9 @@ final class ToolPDFView: PDFView {
                 self?.commitTextEditing()
                 self?.refreshSelectionOverlay()
                 self?.autoExtendIfNeeded()
+                // Freshly scrolled-in tiles can carry stale low-res annotation
+                // caches too — settle-invalidate just like after a zoom.
+                self?.scheduleRenderNudge()
             }
         })
     }
