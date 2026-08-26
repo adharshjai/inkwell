@@ -6,7 +6,7 @@ struct ToolPalette: View {
     @State private var showStyle = false
 
     private let mainTools: [Tool] = [.select, .pen, .highlighter, .eraser, .text]
-    private let shapeTools: [Tool] = [.line, .arrow, .rect, .ellipse]
+    private let shapeTools: [Tool] = [.line, .arrow, .doubleArrow, .rect, .ellipse, .triangle]
 
     var body: some View {
         GlassEffectContainer(spacing: 12) {
@@ -66,20 +66,16 @@ struct ToolPalette: View {
                 .font(.system(size: 15, weight: .medium))
                 .frame(width: 34, height: 30)
                 .contentShape(Rectangle())
-        } primaryAction: {
-            appState.tool = appState.tool.isShape ? appState.tool : .line
-            appState.pendingPlacement = nil
         }
         .menuStyle(.button)
         .buttonStyle(.plain)
-        .menuIndicator(.hidden)
         .foregroundStyle(appState.tool.isShape ? Color.white : Color.primary)
         .background {
             if appState.tool.isShape {
                 Capsule().fill(Color.accentColor)
             }
         }
-        .help("Shapes: Line (L), Arrow (A), Rectangle (R), Ellipse (O)")
+        .help("Shapes: line, arrows, rectangle, ellipse, triangle — hotkeys L, A, R, O")
     }
 
     private var styleButton: some View {

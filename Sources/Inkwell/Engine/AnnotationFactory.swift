@@ -243,6 +243,16 @@ enum Annotations {
             annotation.userName = authorName
             annotation.shouldPrint = true
             return annotation
+        case .triangle:
+            let rect = CGRect(corner: a, corner: b)
+            guard rect.width > 2, rect.height > 2 else { return nil }
+            let path = NSBezierPath()
+            path.move(to: CGPoint(x: rect.midX, y: rect.maxY))
+            path.line(to: CGPoint(x: rect.maxX, y: rect.minY))
+            path.line(to: CGPoint(x: rect.minX, y: rect.minY))
+            path.close()
+            path.lineWidth = width
+            return makeInk(paths: [path], color: color, width: width)
         case .line:
             guard a.distance(to: b) > 3 else { return nil }
             let path = NSBezierPath()
@@ -250,18 +260,24 @@ enum Annotations {
             path.line(to: b)
             path.lineWidth = width
             return makeInk(paths: [path], color: color, width: width)
-        case .arrow:
+        case .arrow, .doubleArrow:
             guard a.distance(to: b) > 3 else { return nil }
             let path = NSBezierPath()
             path.move(to: a)
             path.line(to: b)
-            // Open-V arrowhead at b.
             let angle = atan2(b.y - a.y, b.x - a.x)
             let headLength = max(9, width * 4.5)
             let spread: CGFloat = .pi / 7
+            // Open-V arrowhead at b.
             for side in [angle + .pi - spread, angle + .pi + spread] {
                 path.move(to: b)
                 path.line(to: CGPoint(x: b.x + cos(side) * headLength, y: b.y + sin(side) * headLength))
+            }
+            if tool == .doubleArrow {
+                for side in [angle - spread, angle + spread] {
+                    path.move(to: a)
+                    path.line(to: CGPoint(x: a.x + cos(side) * headLength, y: a.y + sin(side) * headLength))
+                }
             }
             path.lineWidth = width
             return makeInk(paths: [path], color: color, width: width)

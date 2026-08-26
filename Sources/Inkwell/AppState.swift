@@ -6,7 +6,7 @@ import SwiftUI
 // MARK: - Tools
 
 enum Tool: String, CaseIterable, Identifiable {
-    case select, pen, highlighter, eraser, text, line, arrow, rect, ellipse
+    case select, pen, highlighter, eraser, text, line, arrow, doubleArrow, rect, ellipse, triangle
 
     var id: String { rawValue }
 
@@ -19,8 +19,10 @@ enum Tool: String, CaseIterable, Identifiable {
         case .text: "Text"
         case .line: "Line"
         case .arrow: "Arrow"
+        case .doubleArrow: "Double Arrow"
         case .rect: "Rectangle"
         case .ellipse: "Ellipse"
+        case .triangle: "Triangle"
         }
     }
 
@@ -33,8 +35,10 @@ enum Tool: String, CaseIterable, Identifiable {
         case .text: "character.textbox"
         case .line: "line.diagonal"
         case .arrow: "arrow.up.right"
+        case .doubleArrow: "arrow.left.and.right"
         case .rect: "rectangle"
         case .ellipse: "circle"
+        case .triangle: "triangle"
         }
     }
 
@@ -50,12 +54,13 @@ enum Tool: String, CaseIterable, Identifiable {
         case .arrow: "a"
         case .rect: "r"
         case .ellipse: "o"
+        case .doubleArrow, .triangle: nil
         }
     }
 
     var isShape: Bool {
         switch self {
-        case .line, .arrow, .rect, .ellipse: true
+        case .line, .arrow, .doubleArrow, .rect, .ellipse, .triangle: true
         default: false
         }
     }

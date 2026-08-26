@@ -292,6 +292,53 @@ enum SelfTest {
         }
 
         check(ShapeRecognizer.beautify(circle) != nil, "beautify emits paths")
+
+        // Rounded-corner square — circularity ≈ 0.8 fooled the old classifier
+        // into calling this an ellipse.
+        var rounded: [CGPoint] = []
+        let r: CGFloat = 18
+        let side: CGFloat = 140
+        let o = CGPoint(x: 100, y: 100)
+        func arc(_ cx: CGFloat, _ cy: CGFloat, _ from: CGFloat, _ to: CGFloat) {
+            for i in 0...6 {
+                let a = from + (to - from) * CGFloat(i) / 6
+                rounded.append(CGPoint(x: cx + r * cos(a), y: cy + r * sin(a)))
+            }
+        }
+        for i in 0...10 { rounded.append(CGPoint(x: o.x + r + (side - 2 * r) * CGFloat(i) / 10, y: o.y)) }
+        arc(o.x + side - r, o.y + r, -.pi / 2, 0)
+        for i in 0...10 { rounded.append(CGPoint(x: o.x + side, y: o.y + r + (side - 2 * r) * CGFloat(i) / 10)) }
+        arc(o.x + side - r, o.y + side - r, 0, .pi / 2)
+        for i in 0...10 { rounded.append(CGPoint(x: o.x + side - r - (side - 2 * r) * CGFloat(i) / 10, y: o.y + side)) }
+        arc(o.x + r, o.y + side - r, .pi / 2, .pi)
+        for i in 0...10 { rounded.append(CGPoint(x: o.x, y: o.y + side - r - (side - 2 * r) * CGFloat(i) / 10)) }
+        arc(o.x + r, o.y + r, .pi, 3 * .pi / 2)
+        if case .rect = ShapeRecognizer.recognize(rounded) {
+            check(true, "rounded-corner square is a rectangle, not an ellipse")
+        } else {
+            check(false, "rounded-corner square is a rectangle, not an ellipse",
+                  "got \(ShapeRecognizer.recognize(rounded))")
+        }
+
+        // Diamond (rotated square) must stay a 4-corner polygon.
+        var diamond: [CGPoint] = []
+        let dc = CGPoint(x: 300, y: 300)
+        let verts = [CGPoint(x: dc.x, y: dc.y - 80), CGPoint(x: dc.x + 80, y: dc.y),
+                     CGPoint(x: dc.x, y: dc.y + 80), CGPoint(x: dc.x - 80, y: dc.y),
+                     CGPoint(x: dc.x, y: dc.y - 80)]
+        for e in 0..<4 {
+            let a = verts[e], b = verts[e + 1]
+            for i in 0..<12 {
+                let t = CGFloat(i) / 12
+                diamond.append(CGPoint(x: a.x + t * (b.x - a.x), y: a.y + t * (b.y - a.y)))
+            }
+        }
+        diamond.append(verts[4])
+        if case .polygon(let pts) = ShapeRecognizer.recognize(diamond) {
+            check(pts.count == 4, "diamond keeps 4 corners", "corners=\(pts.count)")
+        } else {
+            check(false, "diamond keeps 4 corners", "got \(ShapeRecognizer.recognize(diamond))")
+        }
     }
 
     // MARK: Undo / redo (through the app's own manager)

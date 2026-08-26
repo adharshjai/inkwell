@@ -121,7 +121,7 @@ struct AppCommands: Commands {
                 Button(tool.label) { appState.tool = tool }
             }
             Menu("Shape") {
-                ForEach([Tool.line, .arrow, .rect, .ellipse]) { tool in
+                ForEach([Tool.line, .arrow, .doubleArrow, .rect, .ellipse, .triangle]) { tool in
                     Button(tool.label) { appState.tool = tool }
                 }
             }

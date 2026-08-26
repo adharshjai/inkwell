@@ -16,6 +16,9 @@ enum ShapeRecognizer {
 
     // MARK: - Recognition
 
+    /// Model selection by fit error, not thresholds-on-circularity (a square's
+    /// circularity is 0.785 — treacherously "circular"). Each candidate shape
+    /// is scored by the mean distance from the stroke to its outline.
     static func recognize(_ rawPoints: [CGPoint]) -> Shape {
         let points = NSBezierPath.decimate(rawPoints, epsilon: 1.0)
         guard points.count >= 3 else {
@@ -27,59 +30,124 @@ enum ShapeRecognizer {
         let diagonal = max(hypot(box.width, box.height), 1)
         guard diagonal > 14 else { return .none }
 
-        let simplified = ramerDouglasPeucker(points, epsilon: diagonal * 0.05)
         let perimeter = pathLength(points)
-        let closed = points[0].distance(to: points[points.count - 1]) < max(perimeter * 0.18, 14)
+        let closed = points[0].distance(to: points[points.count - 1]) < max(perimeter * 0.2, 16)
+        let tolerance = max(diagonal * 0.05, 3.5)
 
-        if closed {
-            let area = abs(shoelaceArea(points))
-            let circularity = 4 * .pi * area / max(perimeter * perimeter, 1)
-            // Ellipses are smooth: high circularity or many gentle corners.
-            if circularity > 0.72, simplified.count >= 5 {
-                var frame = box
-                let aspect = frame.width / max(frame.height, 1)
-                if aspect > 0.82, aspect < 1.22 {
-                    // Close enough to a circle — make it one.
-                    let side = (frame.width + frame.height) / 2
-                    frame = CGRect(
-                        x: frame.midX - side / 2, y: frame.midY - side / 2,
-                        width: side, height: side
-                    )
+        if !closed {
+            // Straight line: the whole stroke hugs its chord.
+            let a = points[0], b = points[points.count - 1]
+            let chordDeviation = points.map { perpendicularDistance($0, a, b) }.max() ?? 0
+            if chordDeviation < tolerance {
+                return .line(a, snapAngle(from: a, to: b))
+            }
+            let simplified = cleanCorners(ramerDouglasPeucker(points, epsilon: diagonal * 0.035))
+            if simplified.count <= 6 {
+                var snapped = [simplified[0]]
+                for point in simplified.dropFirst() {
+                    snapped.append(snapAngle(from: snapped[snapped.count - 1], to: point))
                 }
-                return .ellipse(frame)
-            }
-            let corners = closedCorners(simplified)
-            if corners.count == 4 {
-                // Quadrilateral: if it fills its bounding box, call it a rect.
-                let quadArea = abs(shoelaceArea(corners + [corners[0]]))
-                if quadArea / max(box.width * box.height, 1) > 0.72 {
-                    return .rect(box)
-                }
-                return .polygon(corners)
-            }
-            if corners.count == 3 {
-                return .polygon(corners)
-            }
-            if circularity > 0.6 {
-                return .ellipse(box)
+                return .polyline(snapped)
             }
             return .none
         }
 
-        // Open strokes.
-        if simplified.count == 2 {
-            return .line(simplified[0], snapAngle(from: simplified[0], to: simplified[1]))
+        // Closed stroke: score rectangle vs ellipse fits.
+        let rectError = meanRectError(points, box)
+        let ellipseError = meanEllipseError(points, box)
+        let corners = cleanCorners(closedCorners(
+            ramerDouglasPeucker(points, epsilon: diagonal * 0.035)
+        ))
+
+        if rectError < ellipseError, rectError < tolerance {
+            return .rect(box)
         }
-        if simplified.count <= 6 {
-            // A deliberate multi-segment path (V, Z, step) — keep its corners,
-            // gently straightening each segment.
-            var snapped = [simplified[0]]
-            for point in simplified.dropFirst() {
-                snapped.append(snapAngle(from: snapped[snapped.count - 1], to: point))
+        if ellipseError <= rectError, ellipseError < tolerance {
+            var frame = box
+            let aspect = frame.width / max(frame.height, 1)
+            if aspect > 0.82, aspect < 1.22 {
+                let side = (frame.width + frame.height) / 2
+                frame = CGRect(
+                    x: frame.midX - side / 2, y: frame.midY - side / 2,
+                    width: side, height: side
+                )
             }
-            return .polyline(snapped)
+            return .ellipse(frame)
+        }
+        // Neither primitive fits well — trust the corners (triangle, diamond,
+        // parallelogram, pentagon…).
+        if (3...6).contains(corners.count) {
+            return .polygon(corners)
+        }
+        // Blobby but closed: whichever primitive was less bad.
+        if min(rectError, ellipseError) < tolerance * 1.8 {
+            return rectError < ellipseError ? .rect(box) : .ellipse(box)
         }
         return .none
+    }
+
+    /// Mean distance from stroke points to the rectangle's outline.
+    private static func meanRectError(_ points: [CGPoint], _ box: CGRect) -> CGFloat {
+        let corners = [
+            CGPoint(x: box.minX, y: box.minY), CGPoint(x: box.maxX, y: box.minY),
+            CGPoint(x: box.maxX, y: box.maxY), CGPoint(x: box.minX, y: box.maxY),
+        ]
+        var total: CGFloat = 0
+        for p in points {
+            var best = CGFloat.greatestFiniteMagnitude
+            for i in 0..<4 {
+                best = min(best, segmentDistance(p, corners[i], corners[(i + 1) % 4]))
+            }
+            total += best
+        }
+        return total / CGFloat(points.count)
+    }
+
+    /// Mean radial deviation from the ellipse inscribed in the bounding box.
+    private static func meanEllipseError(_ points: [CGPoint], _ box: CGRect) -> CGFloat {
+        let a = max(box.width / 2, 0.5), b = max(box.height / 2, 0.5)
+        let cx = box.midX, cy = box.midY
+        let meanRadius = (a + b) / 2
+        var total: CGFloat = 0
+        for p in points {
+            let nx = (p.x - cx) / a, ny = (p.y - cy) / b
+            let r = (nx * nx + ny * ny).squareRoot()
+            total += abs(r - 1) * meanRadius
+        }
+        return total / CGFloat(points.count)
+    }
+
+    private static func segmentDistance(_ p: CGPoint, _ a: CGPoint, _ b: CGPoint) -> CGFloat {
+        let dx = b.x - a.x, dy = b.y - a.y
+        let lengthSquared = dx * dx + dy * dy
+        guard lengthSquared > 0.0001 else { return p.distance(to: a) }
+        let t = min(max(((p.x - a.x) * dx + (p.y - a.y) * dy) / lengthSquared, 0), 1)
+        return p.distance(to: CGPoint(x: a.x + t * dx, y: a.y + t * dy))
+    }
+
+    /// Drops corners that are nearly collinear (< 25° turn) or nearly on top
+    /// of a neighbor — hand-drawn rounded corners produce both.
+    private static func cleanCorners(_ corners: [CGPoint]) -> [CGPoint] {
+        guard corners.count > 2 else { return corners }
+        var out: [CGPoint] = [corners[0]]
+        for i in 1..<corners.count {
+            let candidate = corners[i]
+            if let last = out.last, last.distance(to: candidate) < 6 { continue }
+            out.append(candidate)
+        }
+        // Collinearity pass (endpoints kept).
+        guard out.count > 2 else { return out }
+        var cleaned: [CGPoint] = [out[0]]
+        for i in 1..<(out.count - 1) {
+            let prev = cleaned[cleaned.count - 1], here = out[i], next = out[i + 1]
+            let a1 = atan2(here.y - prev.y, here.x - prev.x)
+            let a2 = atan2(next.y - here.y, next.x - here.x)
+            var turn = abs(a2 - a1)
+            if turn > .pi { turn = 2 * .pi - turn }
+            if turn > (25 * .pi / 180) { cleaned.append(here) }
+        }
+        cleaned.append(out[out.count - 1])
+        return cleaned
     }
 
     /// Beautified page-space paths for a recognized shape (nil = keep raw ink).

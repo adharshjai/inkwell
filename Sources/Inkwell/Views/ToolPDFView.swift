@@ -14,8 +14,6 @@ final class ToolPDFView: PDFView {
     private var strokePage: PDFPage?
     private var shapeStart: CGPoint?
     private var lastDragPoint: CGPoint?
-    private var previewAnnotation: PDFAnnotation?
-    private var previewPage: PDFPage?
     private var eraserGroupOpen = false
 
     // Annotation move / marquee / resize state (select tool)
@@ -113,10 +111,7 @@ final class ToolPDFView: PDFView {
                 self?.commitTextEditing()
                 self?.refreshSelectionOverlay()
                 self?.appState?.syncZoom()
-                // Nudge a fresh vector render after pinch-zoom so the view
-                // never lingers on an upscaled bitmap.
-                self?.needsDisplay = true
-                self?.documentView?.needsDisplay = true
+                self?.scheduleRenderNudge()
             }
         })
     }
@@ -129,6 +124,19 @@ final class ToolPDFView: PDFView {
         super.viewDidMoveToWindow()
         window?.acceptsMouseMovedEvents = true
         ensureScrollObserver()
+    }
+
+    /// One re-render nudge shortly after zooming settles — never per frame,
+    /// which would re-rasterize the whole page continuously during a pinch.
+    private var renderNudge: DispatchWorkItem?
+
+    private func scheduleRenderNudge() {
+        renderNudge?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.documentView?.needsDisplay = true
+        }
+        renderNudge = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: work)
     }
 
     /// Manual zoom must stick: leaving autoScales on lets any relayout
@@ -300,7 +308,7 @@ final class ToolPDFView: PDFView {
                 fontSize: dynamicSize, color: appState.inkColor
             )
             beginEditingText(annotation: annotation, page: page, isNew: true)
-        case .line, .arrow, .rect, .ellipse:
+        case .line, .arrow, .doubleArrow, .rect, .ellipse, .triangle:
             strokePage = page
             shapeStart = point
             lastDragPoint = point
@@ -353,7 +361,7 @@ final class ToolPDFView: PDFView {
         case .eraser:
             guard let (page, point) = pagePoint(for: event) else { return }
             eraseAnnotation(at: point, on: page)
-        case .line, .arrow, .rect, .ellipse:
+        case .line, .arrow, .doubleArrow, .rect, .ellipse, .triangle:
             guard let start = shapeStart, let page = strokePage,
                   let (eventPage, rawPoint) = pagePoint(for: event), eventPage === page else { return }
             let point = constrained(rawPoint, from: start, tool: appState.tool, shift: event.modifierFlags.contains(.shift))
@@ -406,7 +414,7 @@ final class ToolPDFView: PDFView {
             }
             strokePoints = []
             strokePage = nil
-        case .line, .arrow, .rect, .ellipse:
+        case .line, .arrow, .doubleArrow, .rect, .ellipse, .triangle:
             clearPreview()
             if let start = shapeStart, let page = strokePage {
                 // Use the release point when it's on the origin page; otherwise
@@ -435,56 +443,87 @@ final class ToolPDFView: PDFView {
         }
     }
 
-    // MARK: - Previews (transient annotations, not undo-registered)
+    // MARK: - Previews (drawn on the overlay — never touch the PDF while
+    // dragging, so pages aren't re-rendered dozens of times per second)
+
+    private func showPreview(_ path: NSBezierPath, color: NSColor, width: CGFloat) {
+        selectionOverlay.previewPath = path
+        selectionOverlay.previewColor = color
+        selectionOverlay.previewLineWidth = max(width * scaleFactor, 0.75)
+    }
+
+    private func viewPath(through pagePoints: [CGPoint], on page: PDFPage) -> NSBezierPath? {
+        guard let first = pagePoints.first else { return nil }
+        let path = NSBezierPath()
+        path.move(to: convert(first, from: page))
+        for p in pagePoints.dropFirst() { path.line(to: convert(p, from: page)) }
+        return path
+    }
 
     private func updateStrokePreview(on page: PDFPage) {
-        guard let appState else { return }
-        clearPreview()
-        let path = NSBezierPath()
-        guard let first = strokePoints.first else { return }
-        path.move(to: first)
-        for p in strokePoints.dropFirst() { path.line(to: p) }
-        path.lineWidth = appState.activeStrokeWidth
-        if let preview = Annotations.makeInk(
-            paths: [path], color: appState.activeStrokeColor, width: appState.activeStrokeWidth
-        ) {
-            page.addAnnotation(preview)
-            previewAnnotation = preview
-            previewPage = page
-        }
+        guard let appState, let path = viewPath(through: strokePoints, on: page) else { return }
+        showPreview(path, color: appState.activeStrokeColor, width: appState.activeStrokeWidth)
     }
 
     private func updateShapePreview(from a: CGPoint, to b: CGPoint, on page: PDFPage) {
         guard let appState else { return }
-        clearPreview()
-        if let preview = Annotations.makeShape(
-            tool: appState.tool, from: a, to: b,
-            color: appState.inkColor.withAlphaComponent(0.75), width: appState.inkWidth
-        ) {
-            page.addAnnotation(preview)
-            previewAnnotation = preview
-            previewPage = page
+        let color = appState.inkColor.withAlphaComponent(0.75)
+        let width = appState.inkWidth
+        switch appState.tool {
+        case .rect, .ellipse, .triangle:
+            let viewRect = convert(CGRect(corner: a, corner: b), from: page)
+            let path: NSBezierPath
+            switch appState.tool {
+            case .rect: path = NSBezierPath(rect: viewRect)
+            case .ellipse: path = NSBezierPath(ovalIn: viewRect)
+            default:
+                path = NSBezierPath()
+                path.move(to: CGPoint(x: viewRect.midX, y: viewRect.maxY))
+                path.line(to: CGPoint(x: viewRect.maxX, y: viewRect.minY))
+                path.line(to: CGPoint(x: viewRect.minX, y: viewRect.minY))
+                path.close()
+            }
+            showPreview(path, color: color, width: width)
+        case .line, .arrow, .doubleArrow:
+            let va = convert(a, from: page), vb = convert(b, from: page)
+            let path = NSBezierPath()
+            path.move(to: va)
+            path.line(to: vb)
+            let angle = atan2(vb.y - va.y, vb.x - va.x)
+            let head = max(9, width * 4.5) * scaleFactor
+            let spread: CGFloat = .pi / 7
+            if appState.tool != .line {
+                for side in [angle + .pi - spread, angle + .pi + spread] {
+                    path.move(to: vb)
+                    path.line(to: CGPoint(x: vb.x + cos(side) * head, y: vb.y + sin(side) * head))
+                }
+            }
+            if appState.tool == .doubleArrow {
+                for side in [angle - spread, angle + spread] {
+                    path.move(to: va)
+                    path.line(to: CGPoint(x: va.x + cos(side) * head, y: va.y + sin(side) * head))
+                }
+            }
+            showPreview(path, color: color, width: width)
+        default:
+            break
         }
     }
 
     private func clearPreview() {
-        if let preview = previewAnnotation, let page = previewPage {
-            page.removeAnnotation(preview)
-        }
-        previewAnnotation = nil
-        previewPage = nil
+        selectionOverlay.previewPath = nil
     }
 
     private func constrained(_ point: CGPoint, from start: CGPoint, tool: Tool, shift: Bool) -> CGPoint {
         guard shift else { return point }
         switch tool {
-        case .line, .arrow:
+        case .line, .arrow, .doubleArrow:
             let delta = point - start
             let angle = atan2(delta.y, delta.x)
             let snapped = (angle / (.pi / 4)).rounded() * (.pi / 4)
             let length = start.distance(to: point)
             return CGPoint(x: start.x + cos(snapped) * length, y: start.y + sin(snapped) * length)
-        case .rect, .ellipse:
+        case .rect, .ellipse, .triangle:
             let dx = point.x - start.x, dy = point.y - start.y
             let side = max(abs(dx), abs(dy))
             return CGPoint(
@@ -642,36 +681,16 @@ final class ToolPDFView: PDFView {
     }
 
     private func updateQuasiPreview(on page: PDFPage) {
-        guard let appState, quasiPoints.count > 1 else { return }
-        clearPreview()
-        let path = NSBezierPath()
-        path.move(to: quasiPoints[0])
-        for p in quasiPoints.dropFirst() { path.line(to: p) }
-        path.lineWidth = appState.inkWidth
-        if let preview = Annotations.makeInk(
-            paths: [path], color: appState.inkColor, width: appState.inkWidth
-        ) {
-            page.addAnnotation(preview)
-            previewAnnotation = preview
-            previewPage = page
-        }
+        guard let appState, quasiPoints.count > 1,
+              let path = viewPath(through: quasiPoints, on: page) else { return }
+        showPreview(path, color: appState.inkColor, width: appState.inkWidth)
     }
 
     private func updateWirePreview(hover: CGPoint, on page: PDFPage) {
-        guard let appState, let wirePage, page === wirePage, !wireVertices.isEmpty else { return }
-        clearPreview()
-        let path = NSBezierPath()
-        path.move(to: wireVertices[0])
-        for v in wireVertices.dropFirst() { path.line(to: v) }
-        path.line(to: appState.snapIfEnabled(hover))
-        path.lineWidth = appState.inkWidth
-        if let preview = Annotations.makeInk(
-            paths: [path], color: appState.inkColor.withAlphaComponent(0.7), width: appState.inkWidth
-        ) {
-            page.addAnnotation(preview)
-            previewAnnotation = preview
-            previewPage = page
-        }
+        guard let appState, let wirePage, page === wirePage, !wireVertices.isEmpty,
+              let path = viewPath(through: wireVertices + [appState.snapIfEnabled(hover)], on: page)
+        else { return }
+        showPreview(path, color: appState.inkColor.withAlphaComponent(0.7), width: appState.inkWidth)
     }
 
     private func commitQuasiStroke(beautify: Bool) {
@@ -1216,12 +1235,25 @@ final class SelectionOverlayView: NSView {
     var marqueeRect: CGRect? {
         didSet { needsDisplay = true }
     }
+    // Live drawing preview (view coordinates) — strokes, shapes, wires.
+    var previewPath: NSBezierPath? {
+        didSet { needsDisplay = true }
+    }
+    var previewColor: NSColor = .black
+    var previewLineWidth: CGFloat = 1.5
 
     // PDFView is NOT flipped on this OS (verified); since this overlay's frame
     // coincides with the PDFView's bounds, unflipped rects draw 1:1.
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
     override func draw(_ dirtyRect: NSRect) {
+        if let preview = previewPath {
+            previewColor.setStroke()
+            preview.lineWidth = previewLineWidth
+            preview.lineCapStyle = .round
+            preview.lineJoinStyle = .round
+            preview.stroke()
+        }
         for rect in highlightRects {
             let path = NSBezierPath(roundedRect: rect, xRadius: 4, yRadius: 4)
             path.setLineDash([5, 3], count: 2, phase: 0)
