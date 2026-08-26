@@ -190,10 +190,22 @@ final class AppState {
         }
     }
 
-    /// Snaps a page point to the notes grid when grid snap is on.
+    /// Grid levels for the canvas: ×5 apart, so zooming in reveals finer
+    /// rulings and zooming out consolidates them (map-app style).
+    static let gridPitches: [CGFloat] = [2, 10, 50, 250, 1250]
+
+    /// The finest pitch that still reads on screen (≥ ~18 screen pt apart).
+    static func gridPitch(forScale scale: CGFloat) -> CGFloat {
+        for pitch in gridPitches where pitch * scale >= 18 { return pitch }
+        return gridPitches[gridPitches.count - 1]
+    }
+
+    /// Snaps a page point to the grid the user currently sees.
     func snapIfEnabled(_ point: CGPoint) -> CGPoint {
         guard notesMode, gridSnap else { return point }
-        let pitch: CGFloat = notesPaper.isCanvas ? 50 : 18
+        let pitch: CGFloat = notesPaper.isCanvas
+            ? AppState.gridPitch(forScale: pdfView?.scaleFactor ?? 1)
+            : 18
         return CGPoint(
             x: (point.x / pitch).rounded() * pitch,
             y: (point.y / pitch).rounded() * pitch

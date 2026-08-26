@@ -806,7 +806,8 @@ final class ToolPDFView: PDFView {
             case "g":
                 if appState.notesMode {
                     appState.gridSnap.toggle()
-                    appState.flash(appState.gridSnap ? "Grid snap on" : "Grid snap off", seconds: 1.2)
+                    refreshSelectionOverlay()
+                    appState.flash(appState.gridSnap ? "Grid on" : "Grid off", seconds: 1.2)
                     return
                 }
             default:
@@ -1170,6 +1171,17 @@ final class ToolPDFView: PDFView {
         }
         selectionOverlay.highlightRects = rects
         selectionOverlay.handleRects = handles
+
+        // Zoom-adaptive virtual grid for the canvas board.
+        if appState.notesMode, appState.notesPaper.isCanvas, appState.gridSnap,
+           let page = document?.page(at: 0) {
+            selectionOverlay.gridOrigin = convert(CGPoint.zero, from: page)
+            selectionOverlay.gridScale = scaleFactor
+            selectionOverlay.gridPageRect = convert(page.bounds(for: .cropBox), from: page)
+            selectionOverlay.gridVisible = true
+        } else {
+            selectionOverlay.gridVisible = false
+        }
     }
 }
 
@@ -1242,11 +1254,24 @@ final class SelectionOverlayView: NSView {
     var previewColor: NSColor = .black
     var previewLineWidth: CGFloat = 1.5
 
+    // Zoom-adaptive virtual grid (canvas boards only).
+    var gridVisible = false {
+        didSet { needsDisplay = true }
+    }
+    var gridOrigin: CGPoint = .zero {
+        didSet { needsDisplay = true }
+    }
+    var gridScale: CGFloat = 1 {
+        didSet { needsDisplay = true }
+    }
+    var gridPageRect: CGRect = .zero
+
     // PDFView is NOT flipped on this OS (verified); since this overlay's frame
     // coincides with the PDFView's bounds, unflipped rects draw 1:1.
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
     override func draw(_ dirtyRect: NSRect) {
+        drawAdaptiveGrid()
         if let preview = previewPath {
             previewColor.setStroke()
             preview.lineWidth = previewLineWidth
@@ -1278,5 +1303,42 @@ final class SelectionOverlayView: NSView {
             NSColor.controlAccentColor.setStroke()
             path.stroke()
         }
+    }
+
+    /// Map-app grid: the finest pitch that reads at the current zoom, fading
+    /// in as it arrives, with the ×5 coarser level always steady above it.
+    private func drawAdaptiveGrid() {
+        guard gridVisible, gridScale > 0 else { return }
+        let clip = bounds.intersection(gridPageRect)
+        guard !clip.isEmpty else { return }
+
+        let minor = AppState.gridPitch(forScale: gridScale)
+        let minorScreen = minor * gridScale
+        let fade = min(1, max(0, (minorScreen - 14) / 50))
+        let ink = NSColor(calibratedRed: 0.55, green: 0.65, blue: 0.80, alpha: 1)
+
+        func strokeLines(pitch: CGFloat, alpha: CGFloat) {
+            let step = pitch * gridScale
+            guard step > 6, alpha > 0.02 else { return }
+            ink.withAlphaComponent(alpha).setStroke()
+            let path = NSBezierPath()
+            path.lineWidth = 1
+            var x = gridOrigin.x + ceil((clip.minX - gridOrigin.x) / step) * step
+            while x <= clip.maxX {
+                path.move(to: CGPoint(x: x, y: clip.minY))
+                path.line(to: CGPoint(x: x, y: clip.maxY))
+                x += step
+            }
+            var y = gridOrigin.y + ceil((clip.minY - gridOrigin.y) / step) * step
+            while y <= clip.maxY {
+                path.move(to: CGPoint(x: clip.minX, y: y))
+                path.line(to: CGPoint(x: clip.maxX, y: y))
+                y += step
+            }
+            path.stroke()
+        }
+
+        strokeLines(pitch: minor, alpha: 0.05 + 0.15 * fade)
+        strokeLines(pitch: minor * 5, alpha: 0.28)
     }
 }

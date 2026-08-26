@@ -137,27 +137,10 @@ private enum PaperRenderer {
 
     // MARK: Templates
 
-    /// Two-level grid that stays legible from 0.05x (whole board) to 16x
-    /// (deep zoom): minors every 100 pt, majors every 500 pt.
+    /// The canvas page itself is clean white — its grid is virtual, drawn
+    /// live by the view at a zoom-adaptive pitch (and never exported).
     private static func drawCanvas(_ ctx: CGContext, in rect: CGRect) {
-        var minors: [(CGPoint, CGPoint)] = []
-        var majors: [(CGPoint, CGPoint)] = []
-        var x: CGFloat = 0
-        while x <= rect.maxX {
-            let seg = (CGPoint(x: x, y: rect.minY), CGPoint(x: x, y: rect.maxY))
-            if x.truncatingRemainder(dividingBy: 500) == 0 { majors.append(seg) } else { minors.append(seg) }
-            x += 100
-        }
-        var y: CGFloat = 0
-        while y <= rect.maxY {
-            let seg = (CGPoint(x: rect.minX, y: y), CGPoint(x: rect.maxX, y: y))
-            if y.truncatingRemainder(dividingBy: 500) == 0 { majors.append(seg) } else { minors.append(seg) }
-            y += 100
-        }
-        setStroke(ctx, grayBlue, alpha: 0.20, width: 1.0)
-        strokeSegments(ctx, minors)
-        setStroke(ctx, grayBlue, alpha: 0.38, width: 1.6)
-        strokeSegments(ctx, majors)
+        _ = rect
     }
 
 
