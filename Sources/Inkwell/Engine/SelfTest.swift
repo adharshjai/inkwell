@@ -353,6 +353,12 @@ enum SelfTest {
         Annotations.registerResize(of: stroke, before: geometry, state: state)
         settle()
         check(abs(stroke.bounds.width - doubled.width) < 0.01, "resize applies")
+        if let original = geometry.lineWidth, let scaled = stroke.border?.lineWidth {
+            check(abs(scaled - original * 2) < 0.05, "resize scales the stroke width",
+                  "was \(original), now \(scaled)")
+        } else {
+            check(false, "resize scales the stroke width", "missing border width")
+        }
         state.performUndo()
         settle()
         check(abs(stroke.bounds.width - geometry.bounds.width) < 0.01, "resize undo restores geometry")

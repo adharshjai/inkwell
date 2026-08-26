@@ -95,12 +95,14 @@ enum Annotations {
         let bounds: CGRect
         let paths: [NSBezierPath]?   // deep copies, bounds-relative (ink)
         let fontSize: CGFloat?       // free text
+        let lineWidth: CGFloat?      // ink stroke width
 
         @MainActor
         init(of annotation: PDFAnnotation) {
             bounds = annotation.bounds
             paths = annotation.paths.map { $0.map { $0.copy() as! NSBezierPath } }
             fontSize = annotation.font?.pointSize
+            lineWidth = annotation.border?.lineWidth
         }
     }
 
@@ -129,6 +131,13 @@ enum Annotations {
                 copy.transform(using: transform)
                 annotation.add(copy)
             }
+            // The stroke must scale with the geometry, or hatch-filled ink
+            // (typeset math) opens visible gaps between its fill lines.
+            if let width = original.lineWidth {
+                let border = PDFBorder()
+                border.lineWidth = max(0.1, width * (sx + sy) / 2)
+                annotation.border = border
+            }
         }
         if annotation.type == "FreeText", let size = original.fontSize {
             let scaled = max(4, size * min(sx, sy))
@@ -144,6 +153,11 @@ enum Annotations {
             }
             for path in originalPaths {
                 annotation.add(path.copy() as! NSBezierPath)
+            }
+            if let width = geometry.lineWidth {
+                let border = PDFBorder()
+                border.lineWidth = width
+                annotation.border = border
             }
         }
         if annotation.type == "FreeText", let size = geometry.fontSize {

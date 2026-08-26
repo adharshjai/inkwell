@@ -292,9 +292,12 @@ final class ToolPDFView: PDFView {
         case .eraser:
             eraseAnnotation(at: point, on: page)
         case .text:
+            // Font size tracks zoom: what you type reads the same size on
+            // screen whether you're at 30% or 800%.
+            let dynamicSize = min(max(appState.fontSize / max(scaleFactor, 0.05), 5), 96)
             let annotation = Annotations.makeFreeText(
                 "", near: point, on: page,
-                fontSize: appState.fontSize, color: appState.inkColor
+                fontSize: dynamicSize, color: appState.inkColor
             )
             beginEditingText(annotation: annotation, page: page, isNew: true)
         case .line, .arrow, .rect, .ellipse:
@@ -713,10 +716,13 @@ final class ToolPDFView: PDFView {
     private func place(_ placement: PendingPlacement, at point: CGPoint, on page: PDFPage, keepArmed: Bool) {
         guard let appState else { return }
         let rotation = page.rotation
+        // Placement sizes are "on-screen" sizes: divide by zoom so equations
+        // and text land looking the size you chose, at any zoom level.
+        let zoom = max(scaleFactor, 0.05)
         switch placement {
         case .typesetMath(let source, let fontSize):
             if let annotation = Annotations.makeTypesetMath(
-                source, fontSize: fontSize, centeredAt: point,
+                source, fontSize: min(max(fontSize / zoom, 5), 200), centeredAt: point,
                 color: appState.inkColor, pageRotation: rotation
             ) {
                 Annotations.add(annotation, to: page, state: appState, actionName: "Place Equation")
@@ -726,7 +732,7 @@ final class ToolPDFView: PDFView {
         case .mathText(let text):
             let annotation = Annotations.makeFreeText(
                 text, near: CGPoint(x: point.x, y: point.y), on: page,
-                fontSize: appState.fontSize + 2, color: appState.inkColor
+                fontSize: min(max((appState.fontSize + 2) / zoom, 5), 96), color: appState.inkColor
             )
             Annotations.add(annotation, to: page, state: appState, actionName: "Place Equation")
         case .stamp(let stamp):
@@ -1017,7 +1023,7 @@ final class ToolPDFView: PDFView {
                 // typeset the text as upright vector ink instead.
                 let topLeft = CGPoint(x: annotation.bounds.minX, y: annotation.bounds.maxY)
                 if let ink = Annotations.makePlainTextInk(
-                    text, fontSize: appState.fontSize, topLeftAt: topLeft,
+                    text, fontSize: annotation.font?.pointSize ?? appState.fontSize, topLeftAt: topLeft,
                     color: appState.inkColor, pageRotation: page.rotation
                 ) {
                     Annotations.add(ink, to: page, state: appState, actionName: "Add Text")
