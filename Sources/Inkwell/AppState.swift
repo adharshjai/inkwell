@@ -1,0 +1,276 @@
+import AppKit
+import Observation
+import PDFKit
+import SwiftUI
+
+// MARK: - Tools
+
+enum Tool: String, CaseIterable, Identifiable {
+    case select, pen, highlighter, eraser, text, line, arrow, rect, ellipse
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .select: "Select"
+        case .pen: "Pen"
+        case .highlighter: "Highlighter"
+        case .eraser: "Eraser"
+        case .text: "Text"
+        case .line: "Line"
+        case .arrow: "Arrow"
+        case .rect: "Rectangle"
+        case .ellipse: "Ellipse"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .select: "cursorarrow"
+        case .pen: "pencil.tip"
+        case .highlighter: "highlighter"
+        case .eraser: "eraser"
+        case .text: "character.textbox"
+        case .line: "line.diagonal"
+        case .arrow: "arrow.up.right"
+        case .rect: "rectangle"
+        case .ellipse: "circle"
+        }
+    }
+
+    /// Single-key shortcut shown in help and handled by the PDF view.
+    var hotkey: Character? {
+        switch self {
+        case .select: "v"
+        case .pen: "p"
+        case .highlighter: "h"
+        case .eraser: "e"
+        case .text: "t"
+        case .line: "l"
+        case .arrow: "a"
+        case .rect: "r"
+        case .ellipse: "o"
+        }
+    }
+
+    var isShape: Bool {
+        switch self {
+        case .line, .arrow, .rect, .ellipse: true
+        default: false
+        }
+    }
+}
+
+// MARK: - Pending placement (click-to-place)
+
+enum PendingPlacement {
+    case typesetMath(String, CGFloat)   // source, font size
+    case mathText(String)
+    case stamp(Stamp)
+    case signature(Signature)
+
+    var hint: String {
+        switch self {
+        case .typesetMath: "Click the page to place your equation — Esc to cancel"
+        case .mathText: "Click the page to place your equation — Esc to cancel"
+        case .stamp(let s): "Click the page to place “\(s.name)” — Esc to cancel"
+        case .signature: "Click the page to place your signature — Esc to cancel"
+        }
+    }
+}
+
+/// Momentary "hold a key, glide on the trackpad" drawing modes — no clicking,
+/// no tool switching, instantly back to typing on release.
+enum Quasimode: String {
+    case ink = "F"
+    case shape = "S"
+    case wire = "W"
+    case erase = "E"
+
+    var label: String {
+        switch self {
+        case .ink: "Draw"
+        case .shape: "Shape"
+        case .wire: "Wire"
+        case .erase: "Erase"
+        }
+    }
+}
+
+enum InspectorTab: String, CaseIterable, Identifiable {
+    case math, stamps, sign
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .math: "Math"
+        case .stamps: "Stamps"
+        case .sign: "Sign"
+        }
+    }
+    var systemImage: String {
+        switch self {
+        case .math: "x.squareroot"
+        case .stamps: "seal"
+        case .sign: "signature"
+        }
+    }
+}
+
+// MARK: - App state
+
+@MainActor
+@Observable
+final class AppState {
+    // Document
+    var document: PDFDocument?
+    var documentURL: URL?
+    var isDirty = false
+    /// Bumped on any structural/page change so thumbnails and views refresh.
+    var docVersion = 0
+
+    var currentPageIndex = 0
+    var pageCount = 0
+    var zoomPercent: Int = 100
+
+    // Tools — Select by default so a first click never marks the document.
+    var tool: Tool = .select {
+        didSet {
+            if tool != .select { selectedAnnotations = []; selectedAnnotationPage = nil }
+        }
+    }
+    var inkColor: NSColor = NSColor.inkSwatches[0].color
+    var inkWidth: CGFloat = 1.6
+    var highlightColor: NSColor = NSColor.highlightSwatches[0].color
+    var highlightWidth: CGFloat = 14
+    var fontSize: CGFloat = 13
+
+    var pendingPlacement: PendingPlacement?
+
+    // Notes mode & quasimodes
+    var notesMode = false
+    var gridSnap = true
+    var activeQuasimode: Quasimode?
+    /// Paper used when the endless notes canvas grows itself.
+    var notesPaper: PaperTemplate = .grid
+
+    /// Undo/redo that respects an active inline text editor (its typing has a
+    /// private undo stack; the document has the real one). During a held W,
+    /// ⌘Z removes the last wire vertex instead.
+    func performUndo() {
+        if pdfView?.handleQuasimodeUndo() == true { return }
+        guard let manager = pdfView?.editingUndoManager ?? undoManager else { return }
+        pdfView?.closeEraserGroupIfOpen()
+        // NSUndoManager refuses to undo while any group is open — never wedge.
+        guard manager.groupingLevel == 0 else { return }
+        manager.undo()
+    }
+
+    func performRedo() {
+        guard activeQuasimode == nil else { return }
+        guard let manager = pdfView?.editingUndoManager ?? undoManager else { return }
+        pdfView?.closeEraserGroupIfOpen()
+        guard manager.groupingLevel == 0 else { return }
+        manager.redo()
+    }
+
+    func toggleNotesMode() {
+        notesMode.toggle()
+        if notesMode {
+            tool = .select
+            flash("Notes — drag to box-select · T to type · hold F to draw · S shapes · W wires · E erase", seconds: 4.5)
+        } else {
+            tool = .select
+            activeQuasimode = nil
+            flash("Notes mode off", seconds: 1.2)
+        }
+    }
+
+    /// Snaps a page point to the notes grid when grid snap is on.
+    func snapIfEnabled(_ point: CGPoint) -> CGPoint {
+        guard notesMode, gridSnap else { return point }
+        let pitch: CGFloat = notesPaper == .canvas ? 50 : 18
+        return CGPoint(
+            x: (point.x / pitch).rounded() * pitch,
+            y: (point.y / pitch).rounded() * pitch
+        )
+    }
+
+    // Selection (annotation editing in Select mode)
+    var selectedAnnotations: [PDFAnnotation] = []
+    var selectedAnnotationPage: PDFPage?
+
+    // Search
+    var searchText = ""
+    var searchResults: [PDFSelection] = []
+    var searchIndex = 0
+    /// Bumped by ⌘F to move keyboard focus into the toolbar search field.
+    var searchFocusTick = 0
+
+    // UI
+    var showInspector = false
+    var inspectorTab: InspectorTab = .math
+    var statusMessage: String?
+    var showExportSheet = false
+    var showSignatureSheet = false
+
+    // Wiring
+    @ObservationIgnored weak var pdfView: ToolPDFView?
+    @ObservationIgnored weak var undoManager: UndoManager?
+
+    let signatures = SignatureStore()
+
+    // MARK: Recents (observable stored property, persisted to UserDefaults)
+
+    private static let recentsKey = "inkwell.recents"
+
+    private(set) var recents: [URL] = (UserDefaults.standard.stringArray(forKey: AppState.recentsKey) ?? [])
+        .map { URL(fileURLWithPath: $0) }
+        .filter { FileManager.default.fileExists(atPath: $0.path) }
+
+    func noteRecent(_ url: URL) {
+        var urls = recents
+        urls.removeAll { $0.path == url.path }
+        urls.insert(url, at: 0)
+        recents = Array(urls.prefix(8))
+        UserDefaults.standard.set(recents.map(\.path), forKey: Self.recentsKey)
+    }
+
+    // MARK: Status toast
+
+    @ObservationIgnored private var statusTask: Task<Void, Never>?
+
+    func flash(_ message: String, seconds: Double = 2.5) {
+        statusMessage = message
+        statusTask?.cancel()
+        statusTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            if !Task.isCancelled { self?.statusMessage = nil }
+        }
+    }
+
+    // MARK: Convenience
+
+    var hasDocument: Bool { document != nil }
+
+    var displayName: String {
+        documentURL?.deletingPathExtension().lastPathComponent ?? "Untitled"
+    }
+
+    func markDirty() {
+        isDirty = true
+    }
+
+    func bumpVersion() {
+        docVersion += 1
+        pageCount = document?.pageCount ?? 0
+    }
+
+    /// The color/width the current drawing tool should use.
+    var activeStrokeColor: NSColor {
+        tool == .highlighter ? highlightColor.withAlphaComponent(0.45) : inkColor
+    }
+
+    var activeStrokeWidth: CGFloat {
+        tool == .highlighter ? highlightWidth : inkWidth
+    }
+}
