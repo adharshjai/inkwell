@@ -524,6 +524,17 @@ enum SelfTest {
             "PDFKit drew elsewhere — convention mismatch"
         )
 
+        // A pen tap must land as a solid dot, not a zero-length stroke.
+        if let dot = Annotations.makeStroke(points: [CGPoint(x: 400, y: 500)], color: .black, width: 1.6) {
+            page.addAnnotation(dot)
+            if let dotRender = renderGray(page) {
+                check(darkestNear(dotRender, x: 400, y: 500, radius: 4) < 128, "pen tap renders a solid dot")
+            }
+            page.removeAnnotation(dot)
+        } else {
+            check(false, "pen tap builds an annotation")
+        }
+
         // Move it and confirm the stroke follows the bounds.
         Annotations.translate(ink, by: CGPoint(x: 120, y: 0))
         if let moved = renderGray(page) {

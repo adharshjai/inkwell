@@ -217,7 +217,28 @@ enum Annotations {
     /// Freehand stroke from raw drag points (page space), smoothed.
     static func makeStroke(points: [CGPoint], color: NSColor, width: CGFloat) -> PDFAnnotation? {
         let cleaned = NSBezierPath.decimate(points)
-        guard !cleaned.isEmpty else { return nil }
+        guard let first = cleaned.first else { return nil }
+
+        var travel: CGFloat = 0
+        var previous = first
+        for p in cleaned.dropFirst() {
+            travel += previous.distance(to: p)
+            previous = p
+        }
+        if travel < 1.5 {
+            // A tap. Zero-length capped strokes render as pixelated blobs in
+            // PDFKit — emit a crisp solid disc instead (a circle stroked at
+            // twice its radius fills itself completely).
+            let diameter = max(width * 2.2, 3)
+            let radius = diameter / 4
+            let dot = NSBezierPath(ovalIn: CGRect(
+                x: first.x - radius, y: first.y - radius,
+                width: radius * 2, height: radius * 2
+            ))
+            dot.lineWidth = diameter / 2
+            return makeInk(paths: [dot], color: color, width: diameter / 2)
+        }
+
         let path = NSBezierPath.smoothPath(through: cleaned)
         path.lineWidth = width
         return makeInk(paths: [path], color: color, width: width)
