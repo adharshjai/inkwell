@@ -55,6 +55,12 @@ enum SelfTest {
             }
             y -= 68
         }
+        // Small-size row — the vector-label case.
+        if let small = Annotations.makeTypesetMath(
+            "vec u  vec v  vec w  ihat  jhat", fontSize: 8, centeredAt: CGPoint(x: 306, y: 40), color: .black
+        ) {
+            page.addAnnotation(small)
+        }
         let scale: CGFloat = 2
         let width = Int(612 * scale), height = Int(792 * scale)
         guard let ctx = CGContext(

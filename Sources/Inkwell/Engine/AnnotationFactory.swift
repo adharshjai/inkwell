@@ -421,7 +421,10 @@ enum Annotations {
         guard let (output, _) = TypesetMath.layout(source, fontSize: fontSize), !output.isEmpty else {
             return nil
         }
-        let paths = TypesetMath.inkPaths(for: output)
+        // Hatch density must scale with glyph size — fixed-width fill turns
+        // small letters into solid blobs and leaves large ones striped.
+        let hatchWidth = min(max(fontSize * 0.024, 0.26), 0.55)
+        let paths = TypesetMath.inkPaths(for: output, strokeWidth: hatchWidth)
         guard !paths.isEmpty else { return nil }
         let origin = CGPoint(
             x: center.x - output.width / 2,
