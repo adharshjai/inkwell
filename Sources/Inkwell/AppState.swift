@@ -219,6 +219,7 @@ final class AppState {
         // NSUndoManager refuses to undo while any group is open — never wedge.
         guard manager.groupingLevel == 0 else { return }
         manager.undo()
+        pdfView?.refreshSelectionOverlay()
     }
 
     func performRedo() {
@@ -227,6 +228,7 @@ final class AppState {
         pdfView?.closeEraserGroupIfOpen()
         guard manager.groupingLevel == 0 else { return }
         manager.redo()
+        pdfView?.refreshSelectionOverlay()
     }
 
     func toggleNotesMode() {
@@ -353,6 +355,9 @@ final class AppState {
     func bumpVersion() {
         docVersion += 1
         pageCount = document?.pageCount ?? 0
+        // The crisp overlay repaints on interaction; mutations that arrive
+        // through the keyboard (⌘Z!) must repaint it explicitly.
+        pdfView?.refreshSelectionOverlay()
     }
 
     /// The color/width the current drawing tool should use.
