@@ -39,6 +39,10 @@ extension AppState {
         documentURL = url
         isDirty = false
         currentPageIndex = 0
+        // Opening a PDF is homework mode — leave any notes-board state behind.
+        notesMode = false
+        activeQuasimode = nil
+        isNotesDocument = false
         clearSearch()
         selectedAnnotations = []
         selectedAnnotationPage = nil
@@ -69,6 +73,9 @@ extension AppState {
     func newDocument(template: PaperTemplate, pages count: Int = 1) {
         guard confirmDiscardIfNeeded() else { return }
         notesPaper = template
+        notesMode = false
+        activeQuasimode = nil
+        isNotesDocument = true
         let doc = PDFDocument()
         for i in 0..<max(1, count) {
             if let page = PDFDocument(data: template.pageData())?.page(at: 0) {

@@ -157,6 +157,9 @@ final class AppState {
     var activeQuasimode: Quasimode?
     /// Paper used when the endless notes canvas grows itself.
     var notesPaper: PaperTemplate = .grid
+    /// True only for documents created as notes (New Notes / New From Paper).
+    /// Opened PDFs are homework: no virtual grid, no page auto-extend — ever.
+    var isNotesDocument = false
 
     /// Undo/redo that respects an active inline text editor (its typing has a
     /// private undo stack; the document has the real one). During a held W,

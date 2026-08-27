@@ -194,6 +194,7 @@ final class ToolPDFView: PDFView {
     /// is one giant page instead — it grows by zooming, not appending.
     private func autoExtendIfNeeded() {
         guard let appState, appState.notesMode, !isAutoExtending,
+              appState.isNotesDocument,
               !appState.notesPaper.isCanvas,
               let doc = document, doc === appState.document,
               let docView = documentView else { return }
@@ -1182,8 +1183,8 @@ final class ToolPDFView: PDFView {
         selectionOverlay.highlightRects = rects
         selectionOverlay.handleRects = handles
 
-        // Zoom-adaptive virtual grid for the canvas board.
-        if appState.notesMode, appState.notesPaper.isCanvas, appState.gridSnap,
+        // Zoom-adaptive virtual grid — canvas boards only, never opened PDFs.
+        if appState.notesMode, appState.isNotesDocument, appState.notesPaper.isCanvas, appState.gridSnap,
            let page = document?.page(at: 0) {
             selectionOverlay.gridOrigin = convert(CGPoint.zero, from: page)
             selectionOverlay.gridScale = scaleFactor
