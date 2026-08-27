@@ -148,11 +148,8 @@ struct ExportSheet: View {
         panel.message = "Export your submission PDF"
         guard panel.runModal() == .OK, let url = panel.url else { return }
 
-        let data: Data?
-        if flatten {
-            data = Exporter.flattened(document)
-        } else {
-            data = document.dataRepresentation()
+        let data: Data? = appState.withOwnAnnotationsVisible {
+            flatten ? Exporter.flattened(document) : document.dataRepresentation()
         }
         guard let data else {
             appState.flash("Export failed")

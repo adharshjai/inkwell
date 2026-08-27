@@ -161,6 +161,54 @@ final class AppState {
     /// Opened PDFs are homework: no virtual grid, no page auto-extend — ever.
     var isNotesDocument = false
 
+    /// PDFKit renders annotations through a resolution-capped buffer on this
+    /// OS (page content stays sharp; annotations pixelate at zoom). When the
+    /// app UI is running, Inkwell's own ink/text annotations are hidden from
+    /// PDFKit and drawn crisply by the overlay instead. They are temporarily
+    /// re-shown for saving, exporting, printing, and thumbnails.
+    @ObservationIgnored var hidesOwnAnnotations = false
+
+    /// Marks every Inkwell ink/text annotation on unrotated pages as hidden
+    /// so the overlay (not PDFKit) draws it.
+    func hideOwnAnnotationsFromPDFView() {
+        guard hidesOwnAnnotations, let document else { return }
+        for index in 0..<document.pageCount {
+            guard let page = document.page(at: index), page.rotation % 360 == 0 else { continue }
+            for annotation in page.annotations
+            where annotation.userName == Annotations.authorName
+                && ["Ink", "FreeText"].contains(annotation.type ?? "") {
+                annotation.shouldDisplay = false
+            }
+        }
+    }
+
+    /// Runs `body` with every hidden Inkwell annotation made visible — so
+    /// writes, flattening, printing, and thumbnail renders include the ink.
+    func withOwnAnnotationsVisible<T>(_ body: () -> T) -> T {
+        guard hidesOwnAnnotations, let document else { return body() }
+        var hidden: [PDFAnnotation] = []
+        for index in 0..<document.pageCount {
+            guard let page = document.page(at: index) else { continue }
+            for annotation in page.annotations
+            where annotation.userName == Annotations.authorName && !annotation.shouldDisplay {
+                annotation.shouldDisplay = true
+                hidden.append(annotation)
+            }
+        }
+        defer {
+            for annotation in hidden { annotation.shouldDisplay = false }
+        }
+        return body()
+    }
+
+    /// The display state an Inkwell annotation should have while in the view.
+    func applyDisplayPolicy(_ annotation: PDFAnnotation, on page: PDFPage) {
+        let ours = annotation.userName == Annotations.authorName
+            && ["Ink", "FreeText"].contains(annotation.type ?? "")
+            && page.rotation % 360 == 0
+        annotation.shouldDisplay = !(hidesOwnAnnotations && ours)
+    }
+
     /// Undo/redo that respects an active inline text editor (its typing has a
     /// private undo stack; the document has the real one). During a held W,
     /// ⌘Z removes the last wire vertex instead.

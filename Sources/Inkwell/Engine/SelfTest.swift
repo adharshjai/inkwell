@@ -18,6 +18,7 @@ enum SelfTest {
         testTypesetInk()
         testShapeRecognizer()
         testUndoRedo()
+        testCrispVisibilityPolicy()
         testPaperTemplates()
         testStamps()
         testInkConvention()
@@ -409,6 +410,37 @@ enum SelfTest {
         state.performUndo()
         settle()
         check(abs(stroke.bounds.width - geometry.bounds.width) < 0.01, "resize undo restores geometry")
+    }
+
+    // MARK: Crisp-rendering visibility policy
+
+    private static func testCrispVisibilityPolicy() {
+        print("Crisp rendering visibility:")
+        let state = AppState()
+        state.hidesOwnAnnotations = true
+        guard let doc = PDFDocument(data: PaperTemplate.blank.pageData()),
+              let page = doc.page(at: 0) else {
+            check(false, "blank doc")
+            return
+        }
+        state.document = doc
+        let points = stride(from: 0, through: 80, by: 4).map { t in CGPoint(x: 200 + t, y: 300) }
+        guard let stroke = Annotations.makeStroke(points: points, color: .black, width: 5) else {
+            check(false, "stroke builds")
+            return
+        }
+        Annotations.add(stroke, to: page, state: state, actionName: "Draw")
+        check(!stroke.shouldDisplay, "new ink is hidden from PDFKit's renderer")
+
+        if let hiddenRender = renderGray(page) {
+            check(darkestNear(hiddenRender, x: 240, y: 300) > 200, "hidden ink doesn't render via PDFKit")
+        }
+        state.withOwnAnnotationsVisible {
+            if let visibleRender = renderGray(page) {
+                check(darkestNear(visibleRender, x: 240, y: 300) < 128, "saves/exports see the ink")
+            }
+        }
+        check(!stroke.shouldDisplay, "ink is re-hidden after the save window closes")
     }
 
     // MARK: Paper

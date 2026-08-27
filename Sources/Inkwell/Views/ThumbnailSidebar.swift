@@ -96,9 +96,11 @@ private struct ThumbnailRow: View {
         guard let page = appState.document?.page(at: index) else { return }
         let box = page.bounds(for: .cropBox)
         let scale = 150 / max(box.width, 1)
-        thumbnail = page.thumbnail(
-            of: CGSize(width: 150, height: max(box.height * scale, 40)),
-            for: .cropBox
-        )
+        thumbnail = appState.withOwnAnnotationsVisible {
+            page.thumbnail(
+                of: CGSize(width: 150, height: max(box.height * scale, 40)),
+                for: .cropBox
+            )
+        }
     }
 }

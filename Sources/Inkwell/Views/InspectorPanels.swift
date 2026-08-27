@@ -60,6 +60,14 @@ struct MathPanel: View {
         "theta ~= sin(theta)",
     ]
 
+    /// Letters with arrows/hats — inserted as `vec u` syntax in Typeset mode
+    /// (drawn accents), or as combining-mark Unicode in Plain mode.
+    private static let vectorSymbols: [(display: String, casual: String)] = [
+        ("u⃗", "vec u"), ("v⃗", "vec v"), ("w⃗", "vec w"), ("a⃗", "vec a"), ("r⃗", "vec r"),
+        ("F⃗", "vec F"), ("E⃗", "vec E"), ("B⃗", "vec B"), ("T⃗", "vec T"), ("p⃗", "vec p"),
+        ("î", "ihat"), ("ĵ", "jhat"), ("k̂", "khat"), ("r̂", "rhat"), ("n̂", "nhat"),
+    ]
+
     private static let quickSymbols: [(String, [String])] = [
         ("Greek", ["α", "β", "γ", "δ", "ε", "θ", "λ", "μ", "π", "ρ", "σ", "τ", "φ", "ω", "Δ", "Γ", "Θ", "Λ", "Σ", "Φ", "Ψ", "Ω"]),
         ("Operators", ["±", "×", "⋅", "÷", "√", "∞", "∂", "∇", "∫", "∮", "∑", "∏", "≈", "≠", "≤", "≥", "∝", "≡"]),
@@ -151,6 +159,31 @@ struct MathPanel: View {
             }
 
             Divider()
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Vectors")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 30), spacing: 4)], spacing: 4) {
+                    ForEach(Self.vectorSymbols, id: \.display) { item in
+                        Button {
+                            if typesetMode {
+                                let needsSpace = !(input.isEmpty || input.hasSuffix(" "))
+                                input += (needsSpace ? " " : "") + item.casual + " "
+                            } else {
+                                input += item.display
+                            }
+                        } label: {
+                            Text(item.display)
+                                .font(.system(size: 15))
+                                .frame(width: 30, height: 26)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.bordered)
+                        .help(typesetMode ? item.casual : String(item.display))
+                    }
+                }
+            }
 
             ForEach(Self.quickSymbols, id: \.0) { section in
                 VStack(alignment: .leading, spacing: 6) {

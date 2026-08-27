@@ -7,6 +7,9 @@ struct PDFContainerView: NSViewRepresentable {
     func makeNSView(context: Context) -> ToolPDFView {
         let view = ToolPDFView()
         view.appState = appState
+        // The UI is live: our annotations render through the crisp overlay,
+        // not PDFKit's resolution-capped annotation buffer.
+        appState.hidesOwnAnnotations = true
         view.autoScales = true
         view.displayMode = .singlePageContinuous
         view.displayDirection = .vertical
@@ -32,6 +35,7 @@ struct PDFContainerView: NSViewRepresentable {
         if view.document !== appState.document {
             view.document = appState.document
             view.autoScales = true
+            appState.hideOwnAnnotationsFromPDFView()
         }
         // Notes mode reads as one endless sheet: no page gaps, no shadows,
         // and a deep zoom range for the infinite canvas.

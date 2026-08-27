@@ -18,6 +18,7 @@ enum Annotations {
 
     static func add(_ annotation: PDFAnnotation, to page: PDFPage, state: AppState, actionName: String) {
         page.addAnnotation(annotation)
+        state.applyDisplayPolicy(annotation, on: page)
         state.markDirty()
         state.bumpVersion()
         state.undoManager?.setActionName(actionName)

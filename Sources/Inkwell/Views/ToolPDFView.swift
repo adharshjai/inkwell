@@ -102,6 +102,9 @@ final class ToolPDFView: PDFView {
     private func commonInit() {
         selectionOverlay.autoresizingMask = [.width, .height]
         selectionOverlay.frame = bounds
+        selectionOverlay.crispContentDraw = { [weak self] ctx in
+            self?.drawCrispAnnotations(in: ctx)
+        }
         addSubview(selectionOverlay)
 
         overlayObservers.append(NotificationCenter.default.addObserver(
@@ -1069,7 +1072,11 @@ final class ToolPDFView: PDFView {
                 appState.tool = .select
             }
         } else {
-            annotation.shouldDisplay = true
+            if let page = editingPage ?? appState.selectedAnnotationPage {
+                appState.applyDisplayPolicy(annotation, on: page)
+            } else {
+                annotation.shouldDisplay = true
+            }
             if text.isEmpty {
                 Annotations.remove(annotation, from: page, state: appState, actionName: "Delete Text")
             } else if text != editingOldContents {
@@ -1089,7 +1096,11 @@ final class ToolPDFView: PDFView {
         guard let editor, editor === textEditor, let annotation = editingAnnotation else { return }
         tearDownEditor()
         if !editingIsNew {
-            annotation.shouldDisplay = true
+            if let appState, let page = editingPage {
+                appState.applyDisplayPolicy(annotation, on: page)
+            } else {
+                annotation.shouldDisplay = true
+            }
             setNeedsDisplay(bounds)
         }
     }
@@ -1157,6 +1168,58 @@ final class ToolPDFView: PDFView {
         )
     }
 
+    // MARK: - Crisp annotation rendering
+
+    /// Draws every hidden Inkwell annotation at full backing resolution —
+    /// PDFKit's own annotation pass goes through a resolution-capped buffer
+    /// on this OS and pixelates at zoom.
+    func drawCrispAnnotations(in ctx: CGContext) {
+        guard let appState, appState.hidesOwnAnnotations else { return }
+        for page in visiblePages where page.rotation % 360 == 0 {
+            let origin = convert(CGPoint.zero, from: page)
+            ctx.saveGState()
+            ctx.translateBy(x: origin.x, y: origin.y)
+            ctx.scaleBy(x: scaleFactor, y: scaleFactor)
+            for annotation in page.annotations
+            where annotation.userName == Annotations.authorName
+                && !annotation.shouldDisplay
+                && annotation !== editingAnnotation {
+                let b = annotation.bounds
+                if annotation.type == "Ink", let paths = annotation.paths {
+                    ctx.saveGState()
+                    ctx.translateBy(x: b.minX, y: b.minY)
+                    annotation.color.setStroke()
+                    let width = annotation.border?.lineWidth ?? 1.5
+                    for path in paths {
+                        path.lineWidth = width
+                        path.lineCapStyle = .round
+                        path.lineJoinStyle = .round
+                        path.stroke()
+                    }
+                    ctx.restoreGState()
+                } else if annotation.type == "FreeText", let text = annotation.contents {
+                    let font = annotation.font ?? NSFont.systemFont(ofSize: 13)
+                    let color = annotation.fontColor ?? .black
+                    ctx.saveGState()
+                    ctx.translateBy(x: b.minX, y: b.maxY)
+                    ctx.scaleBy(x: 1, y: -1)
+                    let previous = NSGraphicsContext.current
+                    NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: true)
+                    NSAttributedString(
+                        string: text,
+                        attributes: [.font: font, .foregroundColor: color]
+                    ).draw(
+                        with: CGRect(x: 2, y: 2, width: max(b.width - 4, 4), height: max(b.height - 4, 4)),
+                        options: [.usesLineFragmentOrigin, .usesFontLeading]
+                    )
+                    NSGraphicsContext.current = previous
+                    ctx.restoreGState()
+                }
+            }
+            ctx.restoreGState()
+        }
+    }
+
     // MARK: - Selection overlay
 
     func refreshSelectionOverlay() {
@@ -1182,6 +1245,7 @@ final class ToolPDFView: PDFView {
         }
         selectionOverlay.highlightRects = rects
         selectionOverlay.handleRects = handles
+        selectionOverlay.needsDisplay = true
 
         // Zoom-adaptive virtual grid — canvas boards only, never opened PDFs.
         if appState.notesMode, appState.isNotesDocument, appState.notesPaper.isCanvas, appState.gridSnap,
@@ -1265,6 +1329,9 @@ final class SelectionOverlayView: NSView {
     var previewColor: NSColor = .black
     var previewLineWidth: CGFloat = 1.5
 
+    /// Full-resolution render of Inkwell's annotations (set by ToolPDFView).
+    var crispContentDraw: ((CGContext) -> Void)?
+
     // Zoom-adaptive virtual grid (canvas boards only).
     var gridVisible = false {
         didSet { needsDisplay = true }
@@ -1283,6 +1350,9 @@ final class SelectionOverlayView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         drawAdaptiveGrid()
+        if let ctx = NSGraphicsContext.current?.cgContext {
+            crispContentDraw?(ctx)
+        }
         if let preview = previewPath {
             previewColor.setStroke()
             preview.lineWidth = previewLineWidth

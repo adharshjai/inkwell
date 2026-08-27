@@ -115,7 +115,7 @@ extension AppState {
         pdfView?.commitTextEditing()
         guard let document else { return false }
         guard let url = documentURL else { return saveAs() }
-        if document.write(to: url) {
+        if withOwnAnnotationsVisible({ document.write(to: url) }) {
             isDirty = false
             flash("Saved")
             return true
@@ -131,7 +131,7 @@ extension AppState {
         panel.allowedContentTypes = [.pdf]
         panel.nameFieldStringValue = documentURL?.lastPathComponent ?? "\(displayName).pdf"
         guard panel.runModal() == .OK, let url = panel.url else { return false }
-        if document.write(to: url) {
+        if withOwnAnnotationsVisible({ document.write(to: url) }) {
             documentURL = url
             isDirty = false
             noteRecent(url)
@@ -410,11 +410,9 @@ extension AppState {
             flash("Couldn’t start printing")
             return
         }
-        if let window = pdfView?.window {
-            operation.runModal(for: window, delegate: nil, didRun: nil, contextInfo: nil)
-        } else {
-            operation.run()
-        }
+        // Synchronous run keeps our annotations visible for the whole print
+        // session (the sheet variant returns before rendering happens).
+        _ = withOwnAnnotationsVisible { operation.run() }
     }
 }
 
