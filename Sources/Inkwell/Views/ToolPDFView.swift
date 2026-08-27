@@ -23,6 +23,7 @@ final class ToolPDFView: PDFView {
     private var dragTotal: CGPoint = .zero
     private var marqueeStartView: CGPoint?
     private var marqueePage: PDFPage?
+    private var marqueeAdditive = false
     private var resizeAnnotation: PDFAnnotation?
     private var resizeOriginal: Annotations.Geometry?
     private var resizeCorner: Int?
@@ -309,13 +310,18 @@ final class ToolPDFView: PDFView {
                 refreshSelectionOverlay()
             } else {
                 // 3. Empty space: marquee box-select (default in notes;
-                //    ⌘-drag elsewhere), or fall through to text selection.
-                appState.selectedAnnotations = []
-                appState.selectedAnnotationPage = nil
-                refreshSelectionOverlay()
-                if appState.notesMode || event.modifierFlags.contains(.command) {
+                //    ⇧- or ⌘-drag anywhere). ⇧ keeps the current selection
+                //    and adds what the box sweeps up.
+                let additive = event.modifierFlags.contains(.shift)
+                if !additive {
+                    appState.selectedAnnotations = []
+                    appState.selectedAnnotationPage = nil
+                    refreshSelectionOverlay()
+                }
+                if appState.notesMode || additive || event.modifierFlags.contains(.command) {
                     marqueeStartView = convert(event.locationInWindow, from: nil)
                     marqueePage = page
+                    marqueeAdditive = additive
                 } else {
                     super.mouseDown(with: event)
                 }
@@ -1155,11 +1161,21 @@ final class ToolPDFView: PDFView {
         let hits = page.annotations.filter {
             Annotations.isEditable($0) && $0.bounds.intersects(rect)
         }
-        appState.selectedAnnotations = hits
-        appState.selectedAnnotationPage = hits.isEmpty ? nil : page
+        if marqueeAdditive, appState.selectedAnnotationPage === page {
+            var merged = appState.selectedAnnotations
+            for hit in hits where !merged.contains(where: { $0 === hit }) {
+                merged.append(hit)
+            }
+            appState.selectedAnnotations = merged
+        } else {
+            appState.selectedAnnotations = hits
+        }
+        marqueeAdditive = false
+        appState.selectedAnnotationPage = appState.selectedAnnotations.isEmpty ? nil : page
         refreshSelectionOverlay()
-        if !hits.isEmpty {
-            appState.flash("\(hits.count) selected — drag to move · corner handles resize · ⌫ deletes", seconds: 2.4)
+        let count = appState.selectedAnnotations.count
+        if count > 0 {
+            appState.flash("\(count) selected — drag to move · corner handles resize · ⌫ deletes · ⇧-drag adds more", seconds: 2.4)
         }
     }
 
