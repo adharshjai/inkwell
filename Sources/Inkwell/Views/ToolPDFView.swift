@@ -325,6 +325,11 @@ final class ToolPDFView: PDFView {
             strokePoints = [point]
         case .eraser:
             eraseAnnotation(at: point, on: page)
+        case .fill:
+            let window = convert(bounds, to: page)
+            if BucketFill.fill(at: point, on: page, window: window, state: appState) {
+                appState.flash("Filled", seconds: 0.9)
+            }
         case .text:
             // Font size tracks zoom: what you type reads the same size on
             // screen whether you're at 30% or 800%.
@@ -381,12 +386,17 @@ final class ToolPDFView: PDFView {
         case .pen, .highlighter:
             guard let page = strokePage,
                   let (eventPage, point) = pagePoint(for: event), eventPage === page else { return }
-            if let last = strokePoints.last, last.distance(to: point) < 1.0 { return }
+            // ~1 screen pixel, in page points — a fixed page-space gate
+            // swallows most of the stroke when zoomed far in.
+            if let last = strokePoints.last,
+               last.distance(to: point) < 1.0 / max(scaleFactor, 0.25) { return }
             strokePoints.append(point)
             updateStrokePreview(on: page)
         case .eraser:
             guard let (page, point) = pagePoint(for: event) else { return }
             eraseAnnotation(at: point, on: page)
+        case .fill:
+            break
         case .line, .arrow, .doubleArrow, .rect, .ellipse, .triangle:
             guard let start = shapeStart, let page = strokePage,
                   let (eventPage, rawPoint) = pagePoint(for: event), eventPage === page else { return }
@@ -429,11 +439,15 @@ final class ToolPDFView: PDFView {
             // A plain click never commits ink — require a real stroke.
             let travel = zip(strokePoints, strokePoints.dropFirst())
                 .reduce(CGFloat(0)) { $0 + $1.0.distance(to: $1.1) }
-            if let page = strokePage, strokePoints.count >= 2, travel > 2.0,
+            // A tap (count == 1) is a deliberate dot; travel gate is in screen
+            // terms so deep-zoom microstrokes aren't discarded.
+            if let page = strokePage, !strokePoints.isEmpty,
+               strokePoints.count == 1 || travel > 2.0 / max(scaleFactor, 0.25),
                let annotation = Annotations.makeStroke(
                    points: strokePoints,
                    color: appState.activeStrokeColor,
-                   width: appState.activeStrokeWidth
+                   width: appState.activeStrokeWidth,
+                   detail: 1.2 / max(scaleFactor, 0.25)
                ) {
                 Annotations.add(annotation, to: page, state: appState,
                                 actionName: appState.tool == .pen ? "Draw" : "Highlight")
@@ -464,7 +478,7 @@ final class ToolPDFView: PDFView {
                 appState.undoManager?.endUndoGrouping()
                 eraserGroupOpen = false
             }
-        case .text:
+        case .fill, .text:
             break
         }
     }
@@ -738,7 +752,8 @@ final class ToolPDFView: PDFView {
         }
 
         if let annotation = Annotations.makeStroke(
-            points: quasiPoints, color: appState.inkColor, width: appState.inkWidth
+            points: quasiPoints, color: appState.inkColor, width: appState.inkWidth,
+            detail: 1.2 / max(scaleFactor, 0.25)
         ) {
             Annotations.add(annotation, to: page, state: appState, actionName: "Draw")
         }

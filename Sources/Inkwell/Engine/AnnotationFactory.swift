@@ -216,8 +216,10 @@ enum Annotations {
     }
 
     /// Freehand stroke from raw drag points (page space), smoothed.
-    static func makeStroke(points: [CGPoint], color: NSColor, width: CGFloat) -> PDFAnnotation? {
-        let cleaned = NSBezierPath.decimate(points)
+    /// `detail` is the jitter epsilon in page points — pass ~1.2/zoom so
+    /// deep-zoom drawing keeps its fine structure.
+    static func makeStroke(points: [CGPoint], color: NSColor, width: CGFloat, detail: CGFloat = 1.2) -> PDFAnnotation? {
+        let cleaned = NSBezierPath.decimate(points, epsilon: max(detail, 0.02))
         guard let first = cleaned.first else { return nil }
 
         var travel: CGFloat = 0
@@ -226,7 +228,7 @@ enum Annotations {
             travel += previous.distance(to: p)
             previous = p
         }
-        if travel < 1.5 {
+        if travel < detail * 1.25 {
             // A tap. Zero-length capped strokes render as pixelated blobs in
             // PDFKit — emit a crisp solid disc instead (a circle stroked at
             // twice its radius fills itself completely).
@@ -251,7 +253,7 @@ enum Annotations {
         switch tool {
         case .rect, .ellipse:
             let rect = CGRect(corner: a, corner: b)
-            guard rect.width > 2, rect.height > 2 else { return nil }
+            guard rect.width > 1, rect.height > 1 else { return nil }
             let annotation = PDFAnnotation(
                 bounds: rect.insetBy(dx: -width, dy: -width),
                 forType: tool == .rect ? .square : .circle,
@@ -267,7 +269,7 @@ enum Annotations {
             return annotation
         case .triangle:
             let rect = CGRect(corner: a, corner: b)
-            guard rect.width > 2, rect.height > 2 else { return nil }
+            guard rect.width > 1, rect.height > 1 else { return nil }
             let path = NSBezierPath()
             path.move(to: CGPoint(x: rect.midX, y: rect.maxY))
             path.line(to: CGPoint(x: rect.maxX, y: rect.minY))
@@ -276,14 +278,14 @@ enum Annotations {
             path.lineWidth = width
             return makeInk(paths: [path], color: color, width: width)
         case .line:
-            guard a.distance(to: b) > 3 else { return nil }
+            guard a.distance(to: b) > 1.2 else { return nil }
             let path = NSBezierPath()
             path.move(to: a)
             path.line(to: b)
             path.lineWidth = width
             return makeInk(paths: [path], color: color, width: width)
         case .arrow, .doubleArrow:
-            guard a.distance(to: b) > 3 else { return nil }
+            guard a.distance(to: b) > 1.2 else { return nil }
             let path = NSBezierPath()
             path.move(to: a)
             path.line(to: b)

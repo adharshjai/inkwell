@@ -117,7 +117,7 @@ struct AppCommands: Commands {
             .keyboardShortcut("n", modifiers: [.command, .shift])
             .disabled(!appState.hasDocument)
             Divider()
-            ForEach([Tool.select, .pen, .highlighter, .eraser, .text]) { tool in
+            ForEach([Tool.select, .pen, .highlighter, .eraser, .fill, .text]) { tool in
                 Button(tool.label) { appState.tool = tool }
             }
             Menu("Shape") {

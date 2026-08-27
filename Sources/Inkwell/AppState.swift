@@ -6,7 +6,7 @@ import SwiftUI
 // MARK: - Tools
 
 enum Tool: String, CaseIterable, Identifiable {
-    case select, pen, highlighter, eraser, text, line, arrow, doubleArrow, rect, ellipse, triangle
+    case select, pen, highlighter, eraser, fill, text, line, arrow, doubleArrow, rect, ellipse, triangle
 
     var id: String { rawValue }
 
@@ -16,6 +16,7 @@ enum Tool: String, CaseIterable, Identifiable {
         case .pen: "Pen"
         case .highlighter: "Highlighter"
         case .eraser: "Eraser"
+        case .fill: "Fill"
         case .text: "Text"
         case .line: "Line"
         case .arrow: "Arrow"
@@ -32,6 +33,7 @@ enum Tool: String, CaseIterable, Identifiable {
         case .pen: "pencil.tip"
         case .highlighter: "highlighter"
         case .eraser: "eraser"
+        case .fill: "drop.fill"
         case .text: "character.textbox"
         case .line: "line.diagonal"
         case .arrow: "arrow.up.right"
@@ -49,6 +51,7 @@ enum Tool: String, CaseIterable, Identifiable {
         case .pen: "p"
         case .highlighter: "h"
         case .eraser: "e"
+        case .fill: "b"
         case .text: "t"
         case .line: "l"
         case .arrow: "a"
@@ -147,6 +150,7 @@ final class AppState {
     var inkWidth: CGFloat = 1.6
     var highlightColor: NSColor = NSColor.highlightSwatches[0].color
     var highlightWidth: CGFloat = 14
+    var fillColor: NSColor = NSColor(calibratedRed: 1.0, green: 0.82, blue: 0.32, alpha: 0.85)
     var fontSize: CGFloat = 13
 
     var pendingPlacement: PendingPlacement?

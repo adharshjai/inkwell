@@ -5,7 +5,7 @@ struct ToolPalette: View {
     let appState: AppState
     @State private var showStyle = false
 
-    private let mainTools: [Tool] = [.select, .pen, .highlighter, .eraser, .text]
+    private let mainTools: [Tool] = [.select, .pen, .highlighter, .eraser, .fill, .text]
     private let shapeTools: [Tool] = [.line, .arrow, .doubleArrow, .rect, .ellipse, .triangle]
 
     var body: some View {
@@ -78,13 +78,21 @@ struct ToolPalette: View {
         .help("Shapes: line, arrows, rectangle, ellipse, triangle — hotkeys L, A, R, O")
     }
 
+    private var styleDotColor: NSColor {
+        switch appState.tool {
+        case .highlighter: appState.highlightColor
+        case .fill: appState.fillColor
+        default: appState.inkColor
+        }
+    }
+
     private var styleButton: some View {
         Button {
             showStyle.toggle()
         } label: {
             ZStack {
                 Circle()
-                    .fill(Color(nsColor: appState.tool == .highlighter ? appState.highlightColor : appState.inkColor))
+                    .fill(Color(nsColor: styleDotColor))
                     .frame(width: 18, height: 18)
                 Circle()
                     .strokeBorder(Color.primary.opacity(0.25), lineWidth: 1)
@@ -108,8 +116,13 @@ struct StylePopover: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Ink")
-                .font(.headline)
+            HStack {
+                Text("Ink")
+                    .font(.headline)
+                Spacer()
+                ColorPicker("Ink color", selection: nsColorBinding(\.inkColor), supportsOpacity: true)
+                    .labelsHidden()
+            }
             HStack(spacing: 8) {
                 ForEach(NSColor.inkSwatches, id: \.name) { swatch in
                     swatchButton(swatch.color, name: swatch.name, isSelected: appState.inkColor == swatch.color) {
@@ -129,8 +142,13 @@ struct StylePopover: View {
 
             Divider()
 
-            Text("Highlighter")
-                .font(.headline)
+            HStack {
+                Text("Highlighter")
+                    .font(.headline)
+                Spacer()
+                ColorPicker("Highlighter color", selection: nsColorBinding(\.highlightColor), supportsOpacity: true)
+                    .labelsHidden()
+            }
             HStack(spacing: 8) {
                 ForEach(NSColor.highlightSwatches, id: \.name) { swatch in
                     swatchButton(swatch.color, name: swatch.name, isSelected: appState.highlightColor == swatch.color) {
@@ -141,6 +159,19 @@ struct StylePopover: View {
                 Slider(value: highlightWidthBinding, in: 6...26, step: 1)
                     .frame(width: 90)
             }
+
+            Divider()
+
+            HStack {
+                Text("Bucket fill")
+                    .font(.headline)
+                Spacer()
+                ColorPicker("Fill color", selection: nsColorBinding(\.fillColor), supportsOpacity: true)
+                    .labelsHidden()
+            }
+            Text("Pick the Fill tool (B), then click inside any closed shape — yours or the page's.")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
 
             Divider()
 
@@ -156,6 +187,15 @@ struct StylePopover: View {
         }
         .padding(16)
         .frame(width: 320)
+    }
+
+    /// Full-spectrum picker binding (the system panel: wheel, sliders,
+    /// eyedropper, opacity) for any NSColor property.
+    private func nsColorBinding(_ keyPath: ReferenceWritableKeyPath<AppState, NSColor>) -> Binding<Color> {
+        Binding(
+            get: { Color(nsColor: appState[keyPath: keyPath]) },
+            set: { appState[keyPath: keyPath] = NSColor($0) }
+        )
     }
 
     private var strokeWidthBinding: Binding<CGFloat> {

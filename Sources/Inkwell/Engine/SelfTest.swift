@@ -18,6 +18,7 @@ enum SelfTest {
         testTypesetInk()
         testShapeRecognizer()
         testUndoRedo()
+        testBucketFill()
         testCrispVisibilityPolicy()
         testPaperTemplates()
         testStamps()
@@ -416,6 +417,47 @@ enum SelfTest {
         state.performUndo()
         settle()
         check(abs(stroke.bounds.width - geometry.bounds.width) < 0.01, "resize undo restores geometry")
+    }
+
+    // MARK: Bucket fill
+
+    private static func testBucketFill() {
+        print("BucketFill:")
+        let state = AppState()
+        guard let doc = PDFDocument(data: PaperTemplate.blank.pageData()),
+              let page = doc.page(at: 0) else {
+            check(false, "blank doc")
+            return
+        }
+        state.document = doc
+
+        // A closed square drawn as ink: (200,200)–(320,320), stroke 3.
+        let corners = [
+            CGPoint(x: 200, y: 200), CGPoint(x: 320, y: 200),
+            CGPoint(x: 320, y: 320), CGPoint(x: 200, y: 320), CGPoint(x: 200, y: 200),
+        ]
+        let boxPath = NSBezierPath()
+        boxPath.move(to: corners[0])
+        for c in corners.dropFirst() { boxPath.line(to: c) }
+        boxPath.lineWidth = 3
+        if let border = Annotations.makeInk(paths: [boxPath], color: .black, width: 3) {
+            page.addAnnotation(border)
+        }
+
+        state.fillColor = NSColor(calibratedRed: 1, green: 0, blue: 0, alpha: 1)
+        let window = CGRect(x: 100, y: 100, width: 340, height: 340)
+        let ok = BucketFill.fill(at: CGPoint(x: 260, y: 260), on: page, window: window, state: state)
+        check(ok, "fill succeeds inside a closed shape")
+        check(page.annotations.count == 2, "fill lands as one annotation")
+
+        if let render = renderGray(page) {
+            check(darkestNear(render, x: 260, y: 260, radius: 3) < 200, "interior is inked")
+            check(sample(render, x: 400, y: 400) > 240, "outside stays clean")
+        }
+
+        // Clicking the open page (no enclosure) must refuse, not flood everything.
+        let leaky = BucketFill.fill(at: CGPoint(x: 450, y: 450), on: page, window: window, state: state)
+        check(!leaky, "unenclosed click is refused")
     }
 
     // MARK: Crisp-rendering visibility policy
