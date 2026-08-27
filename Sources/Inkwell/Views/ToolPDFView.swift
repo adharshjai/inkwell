@@ -219,6 +219,18 @@ final class ToolPDFView: PDFView {
         }
     }
 
+    /// PDFKit's annotation(at:) skips hidden annotations — ours are hidden by
+    /// design (the overlay renders them crisply) — so hit-test manually,
+    /// topmost first, with a small touch pad.
+    private func annotationHit(at point: CGPoint, on page: PDFPage) -> PDFAnnotation? {
+        for annotation in page.annotations.reversed()
+        where Annotations.isEditable(annotation)
+            && annotation.bounds.insetBy(dx: -3, dy: -3).contains(point) {
+            return annotation
+        }
+        return nil
+    }
+
     // MARK: - Coordinate helpers
 
     private func pagePoint(for event: NSEvent) -> (PDFPage, CGPoint)? {
@@ -272,7 +284,7 @@ final class ToolPDFView: PDFView {
                 return
             }
             // 2. Click on an annotation → select (⇧ toggles) and start moving.
-            if let hit = page.annotation(at: point), Annotations.isEditable(hit) {
+            if let hit = annotationHit(at: point, on: page) {
                 if event.clickCount == 2, hit.type == "FreeText" {
                     beginEditingText(annotation: hit, page: page, isNew: false)
                     return
@@ -554,7 +566,7 @@ final class ToolPDFView: PDFView {
     @discardableResult
     private func eraseAnnotation(at point: CGPoint, on page: PDFPage) -> Bool {
         guard let appState else { return false }
-        guard let hit = page.annotation(at: point), Annotations.isEditable(hit) else { return false }
+        guard let hit = annotationHit(at: point, on: page) else { return false }
         // One swipe = one undo group, opened lazily on the first hit.
         if !eraserGroupOpen {
             appState.undoManager?.beginUndoGrouping()
@@ -920,7 +932,7 @@ final class ToolPDFView: PDFView {
 
     override func menu(for event: NSEvent) -> NSMenu? {
         guard let appState, let (page, point) = pagePoint(for: event) else { return super.menu(for: event) }
-        if let hit = page.annotation(at: point), Annotations.isEditable(hit) {
+        if let hit = annotationHit(at: point, on: page) {
             if !appState.selectedAnnotations.contains(where: { $0 === hit }) {
                 appState.selectedAnnotations = [hit]
                 appState.selectedAnnotationPage = page
