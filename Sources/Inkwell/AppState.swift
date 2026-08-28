@@ -151,6 +151,8 @@ final class AppState {
     var highlightColor: NSColor = NSColor.highlightSwatches[0].color
     var highlightWidth: CGFloat = 14
     var fillColor: NSColor = NSColor(calibratedRed: 1.0, green: 0.82, blue: 0.32, alpha: 0.85)
+    /// Eraser reach in screen points (converted to page points at use).
+    var eraserSize: CGFloat = 4
     var fontSize: CGFloat = 13
 
     var pendingPlacement: PendingPlacement?

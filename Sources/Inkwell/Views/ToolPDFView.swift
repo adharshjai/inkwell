@@ -586,7 +586,10 @@ final class ToolPDFView: PDFView {
     @discardableResult
     private func eraseAnnotation(at point: CGPoint, on page: PDFPage) -> Bool {
         guard let appState else { return false }
-        guard let hit = annotationHit(at: point, on: page) else { return false }
+        // Precise: you must touch the stroke itself, not just its bounding
+        // box. Reach is the user's eraser size, in screen points.
+        let tolerance = max(appState.eraserSize / max(scaleFactor, 0.25), 0.5)
+        guard let hit = Annotations.preciseHit(at: point, on: page, tolerance: tolerance) else { return false }
         // One swipe = one undo group, opened lazily on the first hit.
         if !eraserGroupOpen {
             appState.undoManager?.beginUndoGrouping()

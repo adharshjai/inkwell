@@ -18,6 +18,7 @@ enum SelfTest {
         testTypesetInk()
         testShapeRecognizer()
         testUndoRedo()
+        testPreciseHit()
         testBucketFill()
         testCrispVisibilityPolicy()
         testPaperTemplates()
@@ -417,6 +418,33 @@ enum SelfTest {
         state.performUndo()
         settle()
         check(abs(stroke.bounds.width - geometry.bounds.width) < 0.01, "resize undo restores geometry")
+    }
+
+    // MARK: Precise eraser hit testing
+
+    private static func testPreciseHit() {
+        print("Precise hit testing:")
+        guard let doc = PDFDocument(data: PaperTemplate.blank.pageData()),
+              let page = doc.page(at: 0) else {
+            check(false, "blank doc")
+            return
+        }
+        // Long diagonal stroke (100,100)→(300,300): huge bounds, thin path.
+        let points = stride(from: 0, through: 200, by: 5).map { t in CGPoint(x: 100 + t, y: 100 + t) }
+        guard let stroke = Annotations.makeStroke(points: points, color: .black, width: 2) else {
+            check(false, "stroke builds")
+            return
+        }
+        page.addAnnotation(stroke)
+        check(
+            Annotations.preciseHit(at: CGPoint(x: 200, y: 200), on: page, tolerance: 4) === stroke,
+            "touching the stroke hits it"
+        )
+        check(
+            Annotations.preciseHit(at: CGPoint(x: 280, y: 120), on: page, tolerance: 4) == nil,
+            "empty corner of its bounding box misses"
+        )
+        page.removeAnnotation(stroke)
     }
 
     // MARK: Bucket fill

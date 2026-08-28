@@ -187,6 +187,66 @@ enum Annotations {
         return !["Widget", "Link"].contains(t)
     }
 
+    /// Path-accurate hit test: ink must actually pass near the point (within
+    /// `tolerance` plus half its stroke width); other types use their bounds.
+    /// Bounds-only testing makes a long diagonal stroke "erasable" from the
+    /// whole empty rectangle around it.
+    static func preciseHit(at point: CGPoint, on page: PDFPage, tolerance: CGFloat) -> PDFAnnotation? {
+        for annotation in page.annotations.reversed() where isEditable(annotation) {
+            let bounds = annotation.bounds.insetBy(dx: -tolerance, dy: -tolerance)
+            guard bounds.contains(point) else { continue }
+            if annotation.type == "Ink", let paths = annotation.paths {
+                let local = CGPoint(
+                    x: point.x - annotation.bounds.minX,
+                    y: point.y - annotation.bounds.minY
+                )
+                let reach = tolerance + (annotation.border?.lineWidth ?? 1.5) / 2
+                if paths.contains(where: { pathDistance($0, to: local) <= reach }) {
+                    return annotation
+                }
+            } else {
+                return annotation
+            }
+        }
+        return nil
+    }
+
+    /// Minimum distance from `point` to the path's stroked centerline.
+    static func pathDistance(_ path: NSBezierPath, to point: CGPoint) -> CGFloat {
+        let flat = path.flattened
+        var best = CGFloat.greatestFiniteMagnitude
+        var last = CGPoint.zero
+        var start = CGPoint.zero
+        var hasPoint = false
+        var points = [NSPoint](repeating: .zero, count: 3)
+        for i in 0..<flat.elementCount {
+            switch flat.element(at: i, associatedPoints: &points) {
+            case .moveTo:
+                last = points[0]; start = points[0]
+                if !hasPoint { best = min(best, point.distance(to: last)) }
+                hasPoint = true
+            case .lineTo:
+                best = min(best, segmentDistance(point, last, points[0]))
+                last = points[0]
+            case .closePath:
+                best = min(best, segmentDistance(point, last, start))
+                last = start
+            default:
+                best = min(best, segmentDistance(point, last, points[2]))
+                last = points[2]
+            }
+        }
+        return best
+    }
+
+    private static func segmentDistance(_ p: CGPoint, _ a: CGPoint, _ b: CGPoint) -> CGFloat {
+        let dx = b.x - a.x, dy = b.y - a.y
+        let lengthSquared = dx * dx + dy * dy
+        guard lengthSquared > 0.0001 else { return p.distance(to: a) }
+        let t = min(max(((p.x - a.x) * dx + (p.y - a.y) * dy) / lengthSquared, 0), 1)
+        return p.distance(to: CGPoint(x: a.x + t * dx, y: a.y + t * dy))
+    }
+
     // MARK: - Ink
 
     /// `paths` are in page space; they are re-based to the annotation's bounds

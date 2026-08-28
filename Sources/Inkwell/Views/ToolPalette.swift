@@ -163,6 +163,20 @@ struct StylePopover: View {
             Divider()
 
             HStack {
+                Image(systemName: "eraser")
+                    .foregroundStyle(.secondary)
+                Text("Eraser size")
+                    .font(.subheadline)
+                Slider(value: eraserSizeBinding, in: 1...20, step: 0.5)
+                Text("\(Int(appState.eraserSize)) px")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .frame(width: 38, alignment: .trailing)
+            }
+
+            Divider()
+
+            HStack {
                 Text("Bucket fill")
                     .font(.headline)
                 Spacer()
@@ -200,6 +214,10 @@ struct StylePopover: View {
 
     private var strokeWidthBinding: Binding<CGFloat> {
         Binding(get: { appState.inkWidth }, set: { appState.inkWidth = $0 })
+    }
+
+    private var eraserSizeBinding: Binding<CGFloat> {
+        Binding(get: { appState.eraserSize }, set: { appState.eraserSize = $0 })
     }
 
     private var highlightWidthBinding: Binding<CGFloat> {
