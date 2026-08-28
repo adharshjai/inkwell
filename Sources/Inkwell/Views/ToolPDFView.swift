@@ -1220,10 +1220,18 @@ final class ToolPDFView: PDFView {
     /// PDFKit's own annotation pass goes through a resolution-capped buffer
     /// on this OS and pixelates at zoom.
     func drawCrispAnnotations(in ctx: CGContext) {
-        guard let appState, appState.hidesOwnAnnotations else { return }
-        for page in visiblePages where page.rotation % 360 == 0 {
+        guard let appState, appState.hidesOwnAnnotations, let document else { return }
+        // Visibility is computed manually — PDFKit's `visiblePages` is
+        // unreliable mid-scroll on this OS, which dropped whole pages of ink
+        // from the overlay while their thumbnails (PDFKit-rendered) were fine.
+        for index in 0..<document.pageCount {
+            guard let page = document.page(at: index), page.rotation % 360 == 0 else { continue }
+            let pageRect = convert(page.bounds(for: .cropBox), from: page)
+            guard pageRect.intersects(bounds) else { continue }
             let origin = convert(CGPoint.zero, from: page)
             ctx.saveGState()
+            // Ink belongs to its page: never spill across the page break.
+            ctx.clip(to: pageRect)
             ctx.translateBy(x: origin.x, y: origin.y)
             ctx.scaleBy(x: scaleFactor, y: scaleFactor)
             for annotation in page.annotations
