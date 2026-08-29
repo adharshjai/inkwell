@@ -22,7 +22,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>CFBundleExecutable</key>      <string>Inkwell</string>
     <key>CFBundleIconFile</key>        <string>AppIcon</string>
     <key>CFBundlePackageType</key>     <string>APPL</string>
-    <key>CFBundleShortVersionString</key> <string>2.7</string>
+    <key>CFBundleShortVersionString</key> <string>2.8</string>
     <key>CFBundleVersion</key>         <string>3</string>
     <key>LSMinimumSystemVersion</key>  <string>26.0</string>
     <key>LSApplicationCategoryType</key> <string>public.app-category.education</string>

@@ -211,6 +211,26 @@ enum Annotations {
         return nil
     }
 
+    /// PDFKit SAVES ink paths in page coordinates but interprets add()-ed
+    /// paths as bounds-relative — so a reloaded document's ink comes back in
+    /// the wrong space for everything downstream (crisp drawing, hit testing,
+    /// resize). Detect page-space paths and rebase them to the bounds origin.
+    static func normalizeInkPaths(_ annotation: PDFAnnotation) {
+        guard annotation.type == "Ink", let paths = annotation.paths, !paths.isEmpty else { return }
+        var bbox = paths[0].bounds
+        for path in paths.dropFirst() { bbox = bbox.union(path.bounds) }
+        let bounds = annotation.bounds
+        let relativeHome = CGRect(origin: .zero, size: bounds.size).insetBy(dx: -6, dy: -6)
+        let absoluteHome = bounds.insetBy(dx: -6, dy: -6)
+        guard !relativeHome.contains(bbox), absoluteHome.contains(bbox) else { return }
+        let rebase = AffineTransform(translationByX: -bounds.minX, byY: -bounds.minY)
+        for path in paths { annotation.remove(path) }
+        for path in paths {
+            path.transform(using: rebase)
+            annotation.add(path)
+        }
+    }
+
     /// Minimum distance from `point` to the path's stroked centerline.
     static func pathDistance(_ path: NSBezierPath, to point: CGPoint) -> CGFloat {
         let flat = path.flattened

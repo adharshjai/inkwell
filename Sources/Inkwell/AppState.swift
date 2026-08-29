@@ -183,6 +183,9 @@ final class AppState {
             for annotation in page.annotations
             where annotation.userName == Annotations.authorName
                 && ["Ink", "FreeText"].contains(annotation.type ?? "") {
+                // Reloaded ink arrives with page-space paths — rebase before
+                // the overlay draws or hit-tests it.
+                Annotations.normalizeInkPaths(annotation)
                 annotation.shouldDisplay = false
             }
         }

@@ -662,6 +662,32 @@ enum SelfTest {
                 darkestNear(rerender, x: 150, y: 150) < 128,
                 "ink survives save & reload at the same place"
             )
+
+            // PDFKit reloads ink with PAGE-SPACE paths (it saves the spec's
+            // InkList) even though add() treats paths as bounds-relative.
+            // The load-time normalization must rebase them, or the crisp
+            // overlay draws reloaded ink off-position and hit tests miss.
+            let state = AppState()
+            state.hidesOwnAnnotations = true
+            state.document = reloaded
+            state.hideOwnAnnotationsFromPDFView()
+            if let reloadedInk = reloadedPage.annotations.first(where: { $0.type == "Ink" }) {
+                check(!reloadedInk.shouldDisplay, "reloaded ink is hidden for crisp rendering")
+                var bbox: CGRect = .null
+                for path in reloadedInk.paths ?? [] { bbox = bbox.union(path.bounds) }
+                check(
+                    CGRect(origin: .zero, size: reloadedInk.bounds.size)
+                        .insetBy(dx: -6, dy: -6).contains(bbox),
+                    "reloaded ink paths are rebased to bounds-relative",
+                    "paths bbox \(bbox) vs bounds \(reloadedInk.bounds)"
+                )
+                check(
+                    Annotations.preciseHit(at: CGPoint(x: 150, y: 150), on: reloadedPage, tolerance: 5) === reloadedInk,
+                    "reloaded ink is hit-testable where it appears"
+                )
+            } else {
+                check(false, "reloaded ink annotation present")
+            }
         } else {
             check(false, "save/reload round-trip")
         }
