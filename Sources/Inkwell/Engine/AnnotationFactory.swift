@@ -211,24 +211,34 @@ enum Annotations {
         return nil
     }
 
-    /// PDFKit SAVES ink paths in page coordinates but interprets add()-ed
-    /// paths as bounds-relative — so a reloaded document's ink comes back in
-    /// the wrong space for everything downstream (crisp drawing, hit testing,
-    /// resize). Detect page-space paths and rebase them to the bounds origin.
+    /// Repairs ink whose bounds and paths have DIVERGED (scar tissue from
+    /// older versions that moved bounds without paths). PDFKit's rendering
+    /// truth is `bounds.origin + paths` — keep the ink exactly where it
+    /// draws and rebuild the bounds box around it, so hit testing, dragging,
+    /// and the crisp overlay all agree with what's on screen.
+    /// (Save/reload itself is verified clean: bounds-relative in, bounds-
+    /// relative out.)
     static func normalizeInkPaths(_ annotation: PDFAnnotation) {
         guard annotation.type == "Ink", let paths = annotation.paths, !paths.isEmpty else { return }
         var bbox = paths[0].bounds
         for path in paths.dropFirst() { bbox = bbox.union(path.bounds) }
         let bounds = annotation.bounds
-        let relativeHome = CGRect(origin: .zero, size: bounds.size).insetBy(dx: -6, dy: -6)
-        let absoluteHome = bounds.insetBy(dx: -6, dy: -6)
-        guard !relativeHome.contains(bbox), absoluteHome.contains(bbox) else { return }
-        let rebase = AffineTransform(translationByX: -bounds.minX, byY: -bounds.minY)
+        // Consistent: the paths sit inside the bounds box (relative space).
+        if CGRect(origin: .zero, size: bounds.size).insetBy(dx: -6, dy: -6).contains(bbox) { return }
+        let pad = max(annotation.border?.lineWidth ?? 1.5, 1) + 4
+        let drawn = bbox
+            .offsetBy(dx: bounds.minX, dy: bounds.minY)
+            .insetBy(dx: -pad, dy: -pad)
+        let shift = AffineTransform(
+            translationByX: bounds.minX - drawn.minX,
+            byY: bounds.minY - drawn.minY
+        )
         for path in paths { annotation.remove(path) }
         for path in paths {
-            path.transform(using: rebase)
+            path.transform(using: shift)
             annotation.add(path)
         }
+        annotation.bounds = drawn
     }
 
     /// Minimum distance from `point` to the path's stroked centerline.

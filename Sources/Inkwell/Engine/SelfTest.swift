@@ -31,6 +31,41 @@ enum SelfTest {
         exit(failures == 0 ? 0 : 1)
     }
 
+    /// `Inkwell --diagnose <pdf>` — loads a real document through the app's
+    /// exact pipeline (normalize + hide) and self-hit-tests every ink
+    /// annotation at a point on its own path. Prints the ones a click would
+    /// miss — i.e. the un-draggable, un-erasable ones.
+    static func diagnose(url: URL) {
+        guard let doc = PDFDocument(url: url) else { print("can't open \(url.path)"); return }
+        let state = AppState()
+        state.hidesOwnAnnotations = true
+        state.document = doc
+        state.hideOwnAnnotationsFromPDFView()
+        var total = 0
+        var unhittable = 0
+        for i in 0..<doc.pageCount {
+            guard let page = doc.page(at: i) else { continue }
+            for a in page.annotations where a.type == "Ink" {
+                total += 1
+                guard let paths = a.paths, let first = paths.first, first.elementCount > 0 else {
+                    unhittable += 1
+                    print("p\(i+1) NO-PATHS bounds=\(a.bounds.integral)")
+                    continue
+                }
+                var pts = [NSPoint](repeating: .zero, count: 3)
+                _ = first.element(at: 0, associatedPoints: &pts)
+                let probe = CGPoint(x: pts[0].x + a.bounds.minX, y: pts[0].y + a.bounds.minY)
+                if Annotations.preciseHit(at: probe, on: page, tolerance: 8) == nil {
+                    unhittable += 1
+                    var bbox = first.bounds
+                    for path in paths.dropFirst() { bbox = bbox.union(path.bounds) }
+                    print("p\(i+1) NOHIT visible=\(a.shouldDisplay) userName=\(a.userName ?? "nil") bounds=\(a.bounds.integral) pathsBBox=\(bbox.integral) probe=\(probe)")
+                }
+            }
+        }
+        print("\(total) ink annotations, \(unhittable) un-hittable")
+    }
+
     /// `Inkwell --typeset-demo out.png` — renders a sheet of typeset equations
     /// (via the real annotation pipeline) for visual inspection.
     static func typesetDemo(to url: URL) {
@@ -663,30 +698,50 @@ enum SelfTest {
                 "ink survives save & reload at the same place"
             )
 
-            // PDFKit reloads ink with PAGE-SPACE paths (it saves the spec's
-            // InkList) even though add() treats paths as bounds-relative.
-            // The load-time normalization must rebase them, or the crisp
-            // overlay draws reloaded ink off-position and hit tests miss.
+            // Save/reload is convention-clean; verify reloaded ink stays
+            // hit-testable through the app's load pipeline.
             let state = AppState()
             state.hidesOwnAnnotations = true
             state.document = reloaded
             state.hideOwnAnnotationsFromPDFView()
             if let reloadedInk = reloadedPage.annotations.first(where: { $0.type == "Ink" }) {
                 check(!reloadedInk.shouldDisplay, "reloaded ink is hidden for crisp rendering")
-                var bbox: CGRect = .null
-                for path in reloadedInk.paths ?? [] { bbox = bbox.union(path.bounds) }
-                check(
-                    CGRect(origin: .zero, size: reloadedInk.bounds.size)
-                        .insetBy(dx: -6, dy: -6).contains(bbox),
-                    "reloaded ink paths are rebased to bounds-relative",
-                    "paths bbox \(bbox) vs bounds \(reloadedInk.bounds)"
-                )
                 check(
                     Annotations.preciseHit(at: CGPoint(x: 150, y: 150), on: reloadedPage, tolerance: 5) === reloadedInk,
                     "reloaded ink is hit-testable where it appears"
                 )
             } else {
                 check(false, "reloaded ink annotation present")
+            }
+
+            // Diverged bounds/paths (old-version drag damage): the repair
+            // must keep the ink where PDFKit draws it and rebuild bounds
+            // around it, making it hittable again.
+            if let victim = reloadedPage.annotations.first(where: { $0.type == "Ink" }) {
+                // Simulate the corruption: shift bounds far away, paths stay.
+                victim.bounds = victim.bounds.offsetBy(dx: -180, dy: -90)
+                var bbox = CGRect.null
+                for p in victim.paths ?? [] { bbox = bbox.union(p.bounds) }
+                let drawnBefore = bbox.offsetBy(dx: victim.bounds.minX, dy: victim.bounds.minY)
+                Annotations.normalizeInkPaths(victim)
+                var bboxAfter = CGRect.null
+                for p in victim.paths ?? [] { bboxAfter = bboxAfter.union(p.bounds) }
+                let drawnAfter = bboxAfter.offsetBy(dx: victim.bounds.minX, dy: victim.bounds.minY)
+                check(
+                    abs(drawnBefore.midX - drawnAfter.midX) < 0.5 && abs(drawnBefore.midY - drawnAfter.midY) < 0.5,
+                    "repair preserves the drawn position"
+                )
+                check(
+                    victim.bounds.insetBy(dx: -1, dy: -1).contains(drawnAfter),
+                    "repair rebuilds bounds around the ink"
+                )
+                check(
+                    Annotations.preciseHit(
+                        at: CGPoint(x: drawnAfter.midX, y: drawnAfter.midY),
+                        on: reloadedPage, tolerance: 8
+                    ) === victim,
+                    "repaired ink is hittable where it draws"
+                )
             }
         } else {
             check(false, "save/reload round-trip")

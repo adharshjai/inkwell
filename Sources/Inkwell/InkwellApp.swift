@@ -13,6 +13,10 @@ enum Boot {
             MainActor.assumeIsolated { SampleDoc.write(to: URL(fileURLWithPath: args[flagIndex + 1])) }
             return
         }
+        if let flagIndex = args.firstIndex(of: "--diagnose"), args.indices.contains(flagIndex + 1) {
+            MainActor.assumeIsolated { SelfTest.diagnose(url: URL(fileURLWithPath: args[flagIndex + 1])) }
+            return
+        }
         if let flagIndex = args.firstIndex(of: "--typeset-demo"), args.indices.contains(flagIndex + 1) {
             MainActor.assumeIsolated { SelfTest.typesetDemo(to: URL(fileURLWithPath: args[flagIndex + 1])) }
             return
