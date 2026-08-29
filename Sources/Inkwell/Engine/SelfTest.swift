@@ -811,33 +811,34 @@ enum SelfTest {
                 check(false, "reloaded ink annotation present")
             }
 
-            // Diverged bounds/paths (old-version drag damage): the repair
-            // must keep the ink where PDFKit draws it and rebuild bounds
-            // around it, making it hittable again.
+            // Diverged bounds/paths (old-version drag damage): /Rect is the
+            // position every other viewer shows, so the repair must keep the
+            // BOUNDS fixed and bring the stray paths home inside it.
             if let victim = reloadedPage.annotations.first(where: { $0.type == "Ink" }) {
-                // Simulate the corruption: shift bounds far away, paths stay.
-                victim.bounds = victim.bounds.offsetBy(dx: -180, dy: -90)
-                var bbox = CGRect.null
-                for p in victim.paths ?? [] { bbox = bbox.union(p.bounds) }
-                let drawnBefore = bbox.offsetBy(dx: victim.bounds.minX, dy: victim.bounds.minY)
+                // Simulate the corruption: shift paths far away, bounds stay.
+                let boundsBefore = victim.bounds
+                if let paths = victim.paths {
+                    for p in paths { victim.remove(p) }
+                    for p in paths {
+                        p.transform(using: AffineTransform(translationByX: 180, byY: 90))
+                        victim.add(p)
+                    }
+                }
                 Annotations.normalizeInkPaths(victim)
+                check(victim.bounds == boundsBefore, "repair never moves the bounds (/Rect is truth)")
                 var bboxAfter = CGRect.null
                 for p in victim.paths ?? [] { bboxAfter = bboxAfter.union(p.bounds) }
-                let drawnAfter = bboxAfter.offsetBy(dx: victim.bounds.minX, dy: victim.bounds.minY)
                 check(
-                    abs(drawnBefore.midX - drawnAfter.midX) < 0.5 && abs(drawnBefore.midY - drawnAfter.midY) < 0.5,
-                    "repair preserves the drawn position"
-                )
-                check(
-                    victim.bounds.insetBy(dx: -1, dy: -1).contains(drawnAfter),
-                    "repair rebuilds bounds around the ink"
+                    CGRect(origin: .zero, size: victim.bounds.size)
+                        .insetBy(dx: -1, dy: -1).contains(bboxAfter),
+                    "repair brings the paths home inside the bounds"
                 )
                 check(
                     Annotations.preciseHit(
-                        at: CGPoint(x: drawnAfter.midX, y: drawnAfter.midY),
+                        at: CGPoint(x: victim.bounds.midX, y: victim.bounds.midY),
                         on: reloadedPage, tolerance: 8
                     ) === victim,
-                    "repaired ink is hittable where it draws"
+                    "repaired ink is hittable at its true (/Rect) position"
                 )
             }
         } else {

@@ -212,12 +212,11 @@ enum Annotations {
     }
 
     /// Repairs ink whose bounds and paths have DIVERGED (scar tissue from
-    /// older versions that moved bounds without paths). PDFKit's rendering
-    /// truth is `bounds.origin + paths` — keep the ink exactly where it
-    /// draws and rebuild the bounds box around it, so hit testing, dragging,
-    /// and the crisp overlay all agree with what's on screen.
-    /// (Save/reload itself is verified clean: bounds-relative in, bounds-
-    /// relative out.)
+    /// older versions). Verified against raw PDF bytes: in damaged files the
+    /// /InkList is stranded away from /Rect, while the appearance stream —
+    /// what Preview and every other viewer render — anchors at /Rect. So
+    /// **bounds (/Rect) is the truth**: bring the stray path data home,
+    /// centered in the bounds box, and never move the bounds.
     static func normalizeInkPaths(_ annotation: PDFAnnotation) {
         guard annotation.type == "Ink", let paths = annotation.paths, !paths.isEmpty else { return }
         var bbox = paths[0].bounds
@@ -225,20 +224,15 @@ enum Annotations {
         let bounds = annotation.bounds
         // Consistent: the paths sit inside the bounds box (relative space).
         if CGRect(origin: .zero, size: bounds.size).insetBy(dx: -6, dy: -6).contains(bbox) { return }
-        let pad = max(annotation.border?.lineWidth ?? 1.5, 1) + 4
-        let drawn = bbox
-            .offsetBy(dx: bounds.minX, dy: bounds.minY)
-            .insetBy(dx: -pad, dy: -pad)
         let shift = AffineTransform(
-            translationByX: bounds.minX - drawn.minX,
-            byY: bounds.minY - drawn.minY
+            translationByX: (bounds.width - bbox.width) / 2 - bbox.minX,
+            byY: (bounds.height - bbox.height) / 2 - bbox.minY
         )
         for path in paths { annotation.remove(path) }
         for path in paths {
             path.transform(using: shift)
             annotation.add(path)
         }
-        annotation.bounds = drawn
     }
 
     /// Minimum distance from `point` to the path's stroked centerline.
