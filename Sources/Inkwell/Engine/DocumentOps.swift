@@ -246,6 +246,8 @@ extension AppState {
         clearSearch()
         markDirty()
         bumpVersion()
+        // Appended pages may carry saved ink — normalize and hide it too.
+        hideOwnAnnotationsFromPDFView()
         undoManager?.setActionName("Append PDF")
         undoManager?.registerUndo(withTarget: self) { st in
             st.removeAppendedRange(start: start, count: count)
@@ -265,6 +267,8 @@ extension AppState {
         clearSearch()
         markDirty()
         bumpVersion()
+        // Appended pages may carry saved ink — normalize and hide it too.
+        hideOwnAnnotationsFromPDFView()
         undoManager?.setActionName("Append PDF")
         undoManager?.registerUndo(withTarget: self) { st in
             for (offset, page) in removed.enumerated() {
