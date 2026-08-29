@@ -17,6 +17,15 @@ enum Boot {
             MainActor.assumeIsolated { SelfTest.diagnose(url: URL(fileURLWithPath: args[flagIndex + 1])) }
             return
         }
+        if let flagIndex = args.firstIndex(of: "--render-compare"), args.indices.contains(flagIndex + 2) {
+            MainActor.assumeIsolated {
+                SelfTest.renderCompare(
+                    url: URL(fileURLWithPath: args[flagIndex + 1]),
+                    outDir: URL(fileURLWithPath: args[flagIndex + 2])
+                )
+            }
+            return
+        }
         if let flagIndex = args.firstIndex(of: "--typeset-demo"), args.indices.contains(flagIndex + 1) {
             MainActor.assumeIsolated { SelfTest.typesetDemo(to: URL(fileURLWithPath: args[flagIndex + 1])) }
             return

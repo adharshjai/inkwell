@@ -66,6 +66,103 @@ enum SelfTest {
         print("\(total) ink annotations, \(unhittable) un-hittable")
     }
 
+    /// `Inkwell --render-compare <pdf> <outdir>` — for every page, renders
+    /// ground truth (PDFKit, all annotations visible) beside a simulation of
+    /// what the app composites (page + hidden ink drawn the overlay's way),
+    /// reports the pixel difference, and writes side-by-side PNGs.
+    static func renderCompare(url: URL, outDir: URL) {
+        guard let doc = PDFDocument(url: url) else { print("can't open"); return }
+        try? FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
+        let state = AppState()
+        state.hidesOwnAnnotations = true
+        state.document = doc
+        state.hideOwnAnnotationsFromPDFView()
+        let scale: CGFloat = 1.5
+
+        func renderPage(_ page: PDFPage, drawHiddenInk: Bool) -> CGContext? {
+            let box = page.bounds(for: .cropBox)
+            let w = Int(box.width * scale), h = Int(box.height * scale)
+            guard let ctx = CGContext(
+                data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ) else { return nil }
+            ctx.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+            ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
+            ctx.scaleBy(x: scale, y: scale)
+            page.draw(with: .cropBox, to: ctx)
+            if drawHiddenInk {
+                let prev = NSGraphicsContext.current
+                NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: false)
+                for a in page.annotations where a.userName == Annotations.authorName && !a.shouldDisplay {
+                    let b = a.bounds
+                    if a.type == "Ink", let paths = a.paths {
+                        ctx.saveGState()
+                        ctx.translateBy(x: b.minX, y: b.minY)
+                        a.color.setStroke()
+                        let width = a.border?.lineWidth ?? 1.5
+                        for path in paths {
+                            path.lineWidth = width
+                            path.lineCapStyle = .round
+                            path.lineJoinStyle = .round
+                            path.stroke()
+                        }
+                        ctx.restoreGState()
+                    } else if a.type == "FreeText", let text = a.contents {
+                        let font = a.font ?? NSFont.systemFont(ofSize: 13)
+                        let color = a.fontColor ?? .black
+                        ctx.saveGState()
+                        ctx.translateBy(x: b.minX, y: b.maxY)
+                        ctx.scaleBy(x: 1, y: -1)
+                        NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: true)
+                        NSAttributedString(string: text, attributes: [.font: font, .foregroundColor: color])
+                            .draw(with: CGRect(x: 2, y: 2, width: max(b.width - 4, 4), height: max(b.height - 4, 4)),
+                                  options: [.usesLineFragmentOrigin, .usesFontLeading])
+                        NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: false)
+                        ctx.restoreGState()
+                    }
+                }
+                NSGraphicsContext.current = prev
+            }
+            return ctx
+        }
+
+        for i in 0..<doc.pageCount {
+            guard let page = doc.page(at: i) else { continue }
+            guard let truthCtx = state.withOwnAnnotationsVisible({ renderPage(page, drawHiddenInk: false) }),
+                  let appCtx = renderPage(page, drawHiddenInk: true),
+                  let dataA = truthCtx.data, let dataB = appCtx.data else { continue }
+            let count = truthCtx.height * truthCtx.bytesPerRow
+            let pa = dataA.bindMemory(to: UInt8.self, capacity: count)
+            let pb = dataB.bindMemory(to: UInt8.self, capacity: count)
+            var diff = 0
+            var idx = 0
+            while idx < count {
+                if abs(Int(pa[idx]) - Int(pb[idx])) > 60 { diff += 1 }
+                idx += 4
+            }
+            print("page \(i+1): \(diff) differing pixels")
+            if diff > 400, let imgA = truthCtx.makeImage(), let imgB = appCtx.makeImage() {
+                let w = truthCtx.width, h = truthCtx.height
+                if let side = CGContext(
+                    data: nil, width: w * 2 + 8, height: h, bitsPerComponent: 8, bytesPerRow: 0,
+                    space: CGColorSpaceCreateDeviceRGB(),
+                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+                ) {
+                    side.setFillColor(CGColor(red: 1, green: 0, blue: 0, alpha: 1))
+                    side.fill(CGRect(x: 0, y: 0, width: w * 2 + 8, height: h))
+                    side.draw(imgA, in: CGRect(x: 0, y: 0, width: w, height: h))
+                    side.draw(imgB, in: CGRect(x: w + 8, y: 0, width: w, height: h))
+                    if let out = side.makeImage() {
+                        let rep = NSBitmapImageRep(cgImage: out)
+                        try? rep.representation(using: .png, properties: [:])?
+                            .write(to: outDir.appendingPathComponent("page\(i+1)_truth_vs_app.png"))
+                    }
+                }
+            }
+        }
+    }
+
     /// `Inkwell --typeset-demo out.png` — renders a sheet of typeset equations
     /// (via the real annotation pipeline) for visual inspection.
     static func typesetDemo(to url: URL) {
