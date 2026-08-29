@@ -24,6 +24,7 @@ final class ToolPDFView: PDFView {
     private var marqueeStartView: CGPoint?
     private var marqueePage: PDFPage?
     private var marqueeAdditive = false
+    private var pendingShiftToggle: PDFAnnotation?
     private var resizeAnnotation: PDFAnnotation?
     private var resizeOriginal: Annotations.Geometry?
     private var resizeCorner: Int?
@@ -220,16 +221,13 @@ final class ToolPDFView: PDFView {
         }
     }
 
-    /// PDFKit's annotation(at:) skips hidden annotations — ours are hidden by
-    /// design (the overlay renders them crisply) — so hit-test manually,
-    /// topmost first, with a small touch pad.
+    /// Path-accurate manual hit test (PDFKit's annotation(at:) skips hidden
+    /// annotations, and bounds-only testing made the mostly-empty bounding
+    /// box of a long stroke swallow clicks — which is why ⇧-drag marquee
+    /// "sometimes didn't work"). Generous ~8 screen px reach for selection.
     private func annotationHit(at point: CGPoint, on page: PDFPage) -> PDFAnnotation? {
-        for annotation in page.annotations.reversed()
-        where Annotations.isEditable(annotation)
-            && annotation.bounds.insetBy(dx: -3, dy: -3).contains(point) {
-            return annotation
-        }
-        return nil
+        let tolerance = max(8 / max(scaleFactor, 0.25), 2.0)
+        return Annotations.preciseHit(at: point, on: page, tolerance: tolerance)
     }
 
     // MARK: - Coordinate helpers
@@ -290,13 +288,13 @@ final class ToolPDFView: PDFView {
                     beginEditingText(annotation: hit, page: page, isNew: false)
                     return
                 }
-                if event.modifierFlags.contains(.shift), appState.selectedAnnotationPage === page {
-                    if appState.selectedAnnotations.contains(where: { $0 === hit }) {
-                        appState.selectedAnnotations.removeAll { $0 === hit }
-                    } else {
-                        appState.selectedAnnotations.append(hit)
-                    }
-                    refreshSelectionOverlay()
+                if event.modifierFlags.contains(.shift) {
+                    // Defer: release in place ⇒ toggle this item; drag ⇒
+                    // additive marquee that starts here.
+                    pendingShiftToggle = hit
+                    marqueeStartView = convert(event.locationInWindow, from: nil)
+                    marqueePage = page
+                    marqueeAdditive = true
                     return
                 }
                 if !appState.selectedAnnotations.contains(where: { $0 === hit }) || appState.selectedAnnotationPage !== page {
@@ -615,6 +613,7 @@ final class ToolPDFView: PDFView {
         dragPage = nil
         marqueeStartView = nil
         marqueePage = nil
+        pendingShiftToggle = nil
         selectionOverlay.marqueeRect = nil
         closeEraserGroupIfOpen()
         appState.activeQuasimode = mode
@@ -1158,9 +1157,24 @@ final class ToolPDFView: PDFView {
         marqueePage = nil
         let rect = CGRect(corner: convert(startView, to: page), corner: convert(endView, to: page))
         guard rect.width > 3 || rect.height > 3 else {
+            // A ⇧-press that never became a drag: toggle the pressed item.
+            if let toggle = pendingShiftToggle {
+                if appState.selectedAnnotationPage === page {
+                    if appState.selectedAnnotations.contains(where: { $0 === toggle }) {
+                        appState.selectedAnnotations.removeAll { $0 === toggle }
+                    } else {
+                        appState.selectedAnnotations.append(toggle)
+                    }
+                } else {
+                    appState.selectedAnnotations = [toggle]
+                }
+                appState.selectedAnnotationPage = appState.selectedAnnotations.isEmpty ? nil : page
+                pendingShiftToggle = nil
+            }
             refreshSelectionOverlay()
             return
         }
+        pendingShiftToggle = nil
         let hits = page.annotations.filter {
             Annotations.isEditable($0) && $0.bounds.intersects(rect)
         }

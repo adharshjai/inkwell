@@ -116,5 +116,5 @@ struct WelcomeView: View {
 }
 
 enum AppInfo {
-    static let version = "2.6"
+    static let version = "2.7"
 }
