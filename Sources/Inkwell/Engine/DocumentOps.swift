@@ -73,7 +73,9 @@ extension AppState {
     func newDocument(template: PaperTemplate, pages count: Int = 1) {
         guard confirmDiscardIfNeeded() else { return }
         notesPaper = template
-        notesMode = false
+        // Canvas boards ARE the notes experience — arrive with the adaptive
+        // grid and hold-key tools live no matter which menu created them.
+        notesMode = template.isCanvas
         activeQuasimode = nil
         isNotesDocument = true
         let doc = PDFDocument()
