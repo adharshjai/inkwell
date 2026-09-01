@@ -198,9 +198,30 @@ struct StylePopover: View {
                         .font(.body.monospacedDigit())
                 }
             }
+
+            Divider()
+
+            Toggle(isOn: hapticsBinding) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Trackpad haptics")
+                    Text("Feel strokes land, shapes snap, and fills thunk.")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+            }
         }
         .padding(16)
         .frame(width: 320)
+    }
+
+    private var hapticsBinding: Binding<Bool> {
+        Binding(
+            get: { Haptics.enabled },
+            set: { on in
+                Haptics.enabled = on
+                if on { Haptics.snap() }
+            }
+        )
     }
 
     /// Full-spectrum picker binding (the system panel: wheel, sliders,

@@ -332,6 +332,7 @@ final class ToolPDFView: PDFView {
         case .fill:
             let window = convert(bounds, to: page)
             if BucketFill.fill(at: point, on: page, window: window, state: appState) {
+                Haptics.thunk()
                 appState.flash("Filled", seconds: 0.9)
             }
         case .text:
@@ -421,6 +422,7 @@ final class ToolPDFView: PDFView {
         case .select:
             if let annotation = resizeAnnotation, let original = resizeOriginal {
                 Annotations.registerResize(of: annotation, before: original, state: appState)
+                Haptics.snap()
                 resizeAnnotation = nil
                 resizeOriginal = nil
                 resizeCorner = nil
@@ -455,6 +457,7 @@ final class ToolPDFView: PDFView {
                ) {
                 Annotations.add(annotation, to: page, state: appState,
                                 actionName: appState.tool == .pen ? "Draw" : "Highlight")
+                Haptics.tick()
             }
             strokePoints = []
             strokePage = nil
@@ -472,6 +475,7 @@ final class ToolPDFView: PDFView {
                     color: appState.inkColor, width: appState.inkWidth
                 ) {
                     Annotations.add(annotation, to: page, state: appState, actionName: appState.tool.label)
+                    Haptics.tick()
                 }
             }
             shapeStart = nil
@@ -594,6 +598,7 @@ final class ToolPDFView: PDFView {
             eraserGroupOpen = true
         }
         Annotations.remove(hit, from: page, state: appState, actionName: "Erase")
+        Haptics.tick()
         return true
     }
 
@@ -708,6 +713,7 @@ final class ToolPDFView: PDFView {
             }
             wireVertices.append(vertex)
             quasiDidAct = true
+            Haptics.tick()
             updateWirePreview(hover: vertex, on: page)
         }
     }
@@ -755,6 +761,7 @@ final class ToolPDFView: PDFView {
             for p in paths { p.lineWidth = appState.inkWidth }
             if let annotation = Annotations.makeInk(paths: paths, color: appState.inkColor, width: appState.inkWidth) {
                 Annotations.add(annotation, to: page, state: appState, actionName: "Shape")
+                Haptics.snap()
             }
             return
         }
@@ -764,6 +771,7 @@ final class ToolPDFView: PDFView {
             detail: 1.2 / max(scaleFactor, 0.25)
         ) {
             Annotations.add(annotation, to: page, state: appState, actionName: "Draw")
+            Haptics.tick()
         }
     }
 
@@ -776,6 +784,7 @@ final class ToolPDFView: PDFView {
         path.lineWidth = appState.inkWidth
         if let annotation = Annotations.makeInk(paths: [path], color: appState.inkColor, width: appState.inkWidth) {
             Annotations.add(annotation, to: page, state: appState, actionName: "Wire")
+            Haptics.snap()
         }
     }
 
@@ -820,6 +829,7 @@ final class ToolPDFView: PDFView {
                 Annotations.add(annotation, to: page, state: appState, actionName: "Sign")
             }
         }
+        Haptics.thunk()
         if !keepArmed {
             appState.pendingPlacement = nil
         } else {
@@ -1192,6 +1202,7 @@ final class ToolPDFView: PDFView {
         refreshSelectionOverlay()
         let count = appState.selectedAnnotations.count
         if count > 0 {
+            Haptics.thunk()
             appState.flash("\(count) selected — drag to move · corner handles resize · ⌫ deletes · ⇧-drag adds more", seconds: 2.4)
         }
     }
