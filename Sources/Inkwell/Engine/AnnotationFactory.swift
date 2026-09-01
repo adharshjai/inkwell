@@ -141,7 +141,10 @@ enum Annotations {
             }
         }
         if annotation.type == "FreeText", let size = original.fontSize {
-            let scaled = max(4, size * min(sx, sy))
+            // Height drives text size: widening a box must not shrink the
+            // text (min(sx, sy) crushed fonts to invisibility on wide-flat
+            // resizes), and there's a readable floor.
+            let scaled = max(6, size * sy)
             annotation.font = NSFont.systemFont(ofSize: scaled)
         }
         annotation.bounds = newBounds
