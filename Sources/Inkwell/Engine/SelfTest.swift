@@ -20,6 +20,7 @@ enum SelfTest {
         testUndoRedo()
         testPreciseHit()
         testBucketFill()
+        testClipboard()
         testCrispVisibilityPolicy()
         testPaperTemplates()
         testStamps()
@@ -618,6 +619,64 @@ enum SelfTest {
         // Clicking the open page (no enclosure) must refuse, not flood everything.
         let leaky = BucketFill.fill(at: CGPoint(x: 450, y: 450), on: page, window: window, state: state)
         check(!leaky, "unenclosed click is refused")
+    }
+
+    // MARK: Clipboard clone & paste
+
+    private static func testClipboard() {
+        print("Clipboard:")
+        let state = AppState()
+        guard let doc = PDFDocument(data: PaperTemplate.blank.pageData()),
+              let page = doc.page(at: 0) else {
+            check(false, "blank doc")
+            return
+        }
+        state.document = doc
+        state.pageCount = 1
+
+        let points = stride(from: 0, through: 60, by: 4).map { t in CGPoint(x: 100 + t, y: 500 - t / 2) }
+        guard let stroke = Annotations.makeStroke(points: points, color: .systemBlue, width: 2.5) else {
+            check(false, "stroke builds")
+            return
+        }
+        page.addAnnotation(stroke)
+        let text = Annotations.makeFreeText("v = IR", near: CGPoint(x: 300, y: 400), on: page, fontSize: 14, color: .black)
+        page.addAnnotation(text)
+
+        // Clone fidelity.
+        if let inkClone = Annotations.clone(stroke) {
+            check(inkClone.bounds == stroke.bounds, "ink clone keeps bounds")
+            check((inkClone.paths?.count ?? 0) == (stroke.paths?.count ?? 0), "ink clone keeps paths")
+            check(abs((inkClone.border?.lineWidth ?? 0) - 2.5) < 0.01, "ink clone keeps stroke width")
+        } else {
+            check(false, "ink clones")
+        }
+        if let textClone = Annotations.clone(text) {
+            check(textClone.contents == "v = IR", "text clone keeps contents")
+            check(textClone.font?.pointSize == text.font?.pointSize, "text clone keeps font size")
+        } else {
+            check(false, "text clones")
+        }
+
+        // Copy + paste: two new annotations, offset, selected.
+        state.selectedAnnotations = [stroke, text]
+        state.selectedAnnotationPage = page
+        state.copySelectedAnnotations()
+        check(state.annotationClipboard.count == 2, "copy captures the selection")
+        let before = page.annotations.count
+        state.pasteAnnotations()
+        check(page.annotations.count == before + 2, "paste adds the items")
+        check(state.selectedAnnotations.count == 2, "pasted items arrive selected")
+        if let pastedInk = state.selectedAnnotations.first(where: { $0.type == "Ink" }) {
+            check(
+                abs(pastedInk.bounds.minX - stroke.bounds.minX - 16) < 0.5
+                    && abs(pastedInk.bounds.minY - stroke.bounds.minY + 16) < 0.5,
+                "paste lands at a cascade offset"
+            )
+        }
+        // System pasteboard got an image render.
+        let pasteboard = NSPasteboard.general
+        check(pasteboard.data(forType: .pdf) != nil, "system pasteboard holds a PDF render")
     }
 
     // MARK: Crisp-rendering visibility policy

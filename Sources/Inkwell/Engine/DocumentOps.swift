@@ -385,6 +385,114 @@ extension AppState {
 
     // MARK: Selected annotation actions
 
+    // MARK: Clipboard (annotations)
+
+    /// True when a text control (inline editor, search field, form field
+    /// editor) owns the keyboard — clipboard verbs then belong to it.
+    var textResponderActive: Bool {
+        guard let responder = NSApp.keyWindow?.firstResponder else { return false }
+        return responder is NSTextView || responder is NSTextField
+    }
+
+    func performCopy() {
+        if textResponderActive {
+            NSApp.sendAction(#selector(NSText.copy(_:)), to: nil, from: nil)
+            return
+        }
+        if !selectedAnnotations.isEmpty {
+            copySelectedAnnotations()
+            return
+        }
+        // Fall through: copy selected page text, if any.
+        NSApp.sendAction(#selector(NSText.copy(_:)), to: nil, from: nil)
+    }
+
+    func performCut() {
+        if textResponderActive {
+            NSApp.sendAction(#selector(NSText.cut(_:)), to: nil, from: nil)
+            return
+        }
+        guard !selectedAnnotations.isEmpty else { return }
+        copySelectedAnnotations()
+        deleteSelectedAnnotation()
+        flash("Cut \(annotationClipboard.count) item\(annotationClipboard.count == 1 ? "" : "s")", seconds: 1.4)
+    }
+
+    func performPaste() {
+        if textResponderActive {
+            NSApp.sendAction(#selector(NSText.paste(_:)), to: nil, from: nil)
+            return
+        }
+        pasteAnnotations()
+    }
+
+    func copySelectedAnnotations() {
+        guard !selectedAnnotations.isEmpty else { return }
+        let clones = selectedAnnotations.compactMap { Annotations.clone($0) }
+        guard !clones.isEmpty else { return }
+        annotationClipboard = clones
+        pasteCascade = 0
+        // Also give the system pasteboard a vector PDF + PNG of the selection,
+        // so it pastes as an image into Notes, Messages, docs…
+        if let render = Annotations.pasteboardRender(clones) {
+            let pasteboard = NSPasteboard.general
+            pasteboard.clearContents()
+            pasteboard.setData(render.pdf, forType: .pdf)
+            if let png = render.png {
+                pasteboard.setData(png, forType: .png)
+            }
+        }
+        flash("Copied \(clones.count) item\(clones.count == 1 ? "" : "s") — ⌘V pastes here, or paste as an image anywhere", seconds: 2.2)
+    }
+
+    func pasteAnnotations() {
+        guard !annotationClipboard.isEmpty else { return }
+        guard let page = pdfView?.currentPage ?? document?.page(at: currentPageIndex) else { return }
+        pasteCascade += 1
+        let offset = CGFloat(pasteCascade) * 16
+
+        var pasted: [PDFAnnotation] = []
+        for template in annotationClipboard {
+            guard let clone = Annotations.clone(template) else { continue }
+            Annotations.translate(clone, by: CGPoint(x: offset, y: -offset))
+            pasted.append(clone)
+        }
+        guard !pasted.isEmpty else { return }
+
+        // If the copied region doesn't land on this page (cross-page paste),
+        // recenter the batch in the visible area.
+        var union = pasted[0].bounds
+        for a in pasted.dropFirst() { union = union.union(a.bounds) }
+        let box = page.bounds(for: .cropBox)
+        if !box.intersects(union) {
+            let target = pdfView.map { view -> CGPoint in
+                let visible = view.convert(view.bounds, to: page)
+                return CGPoint(x: visible.midX, y: visible.midY)
+            } ?? box.center
+            let delta = CGPoint(x: target.x - union.midX, y: target.y - union.midY)
+            for a in pasted { Annotations.translate(a, by: delta) }
+        }
+
+        undoManager?.beginUndoGrouping()
+        for a in pasted {
+            Annotations.add(a, to: page, state: self, actionName: "Paste")
+        }
+        undoManager?.endUndoGrouping()
+
+        tool = .select
+        selectedAnnotations = pasted
+        selectedAnnotationPage = page
+        pdfView?.refreshSelectionOverlay()
+        Haptics.thunk()
+    }
+
+    /// ⌘D — copy + paste in one gesture, without touching the clipboard.
+    func duplicateSelection() {
+        guard !selectedAnnotations.isEmpty else { return }
+        copySelectedAnnotations()
+        pasteAnnotations()
+    }
+
     func deleteSelectedAnnotation() {
         guard !selectedAnnotations.isEmpty, let page = selectedAnnotationPage else { return }
         let annotations = selectedAnnotations

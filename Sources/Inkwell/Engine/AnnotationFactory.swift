@@ -238,6 +238,127 @@ enum Annotations {
         }
     }
 
+    /// Deep copy of an Inkwell-editable annotation (for copy/paste).
+    static func clone(_ annotation: PDFAnnotation) -> PDFAnnotation? {
+        guard let type = annotation.type else { return nil }
+        let copy = PDFAnnotation(
+            bounds: annotation.bounds,
+            forType: PDFAnnotationSubtype(rawValue: "/" + type),
+            withProperties: nil
+        )
+        copy.color = annotation.color
+        copy.userName = authorName
+        copy.shouldPrint = true
+        if let border = annotation.border {
+            let b = PDFBorder()
+            b.lineWidth = border.lineWidth
+            copy.border = b
+        }
+        switch type {
+        case "Ink":
+            for path in annotation.paths ?? [] {
+                copy.add(path.copy() as! NSBezierPath)
+            }
+        case "FreeText":
+            copy.contents = annotation.contents
+            copy.font = annotation.font
+            copy.fontColor = annotation.fontColor
+        case "Square", "Circle":
+            copy.interiorColor = annotation.interiorColor
+        case "Highlight":
+            copy.quadrilateralPoints = annotation.quadrilateralPoints
+        default:
+            break
+        }
+        return copy
+    }
+
+    /// Renders annotations (positions preserved relative to their union box)
+    /// into standalone PDF + PNG data for the system pasteboard.
+    static func pasteboardRender(_ annotations: [PDFAnnotation]) -> (pdf: Data, png: Data?)? {
+        guard !annotations.isEmpty else { return nil }
+        var union = annotations[0].bounds
+        for a in annotations.dropFirst() { union = union.union(a.bounds) }
+        union = union.insetBy(dx: -4, dy: -4)
+        guard union.width > 1, union.height > 1 else { return nil }
+
+        func drawAll(into ctx: CGContext) {
+            ctx.translateBy(x: -union.minX, y: -union.minY)
+            let previous = NSGraphicsContext.current
+            NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: false)
+            for a in annotations {
+                let b = a.bounds
+                switch a.type ?? "" {
+                case "Ink":
+                    ctx.saveGState()
+                    ctx.translateBy(x: b.minX, y: b.minY)
+                    a.color.setStroke()
+                    let width = a.border?.lineWidth ?? 1.5
+                    for path in a.paths ?? [] {
+                        path.lineWidth = width
+                        path.lineCapStyle = .round
+                        path.lineJoinStyle = .round
+                        path.stroke()
+                    }
+                    ctx.restoreGState()
+                case "FreeText":
+                    guard let text = a.contents else { break }
+                    let font = a.font ?? NSFont.systemFont(ofSize: 13)
+                    let color = a.fontColor ?? .black
+                    ctx.saveGState()
+                    ctx.translateBy(x: b.minX, y: b.maxY)
+                    ctx.scaleBy(x: 1, y: -1)
+                    NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: true)
+                    NSAttributedString(string: text, attributes: [.font: font, .foregroundColor: color])
+                        .draw(with: CGRect(x: 2, y: 2, width: max(b.width - 4, 4), height: max(b.height - 4, 4)),
+                              options: [.usesLineFragmentOrigin, .usesFontLeading])
+                    NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: false)
+                    ctx.restoreGState()
+                case "Square", "Circle":
+                    let width = a.border?.lineWidth ?? 1.5
+                    let rect = b.insetBy(dx: width, dy: width)
+                    let path = a.type == "Square" ? NSBezierPath(rect: rect) : NSBezierPath(ovalIn: rect)
+                    path.lineWidth = width
+                    a.color.setStroke()
+                    path.stroke()
+                case "Highlight":
+                    a.color.withAlphaComponent(0.45).setFill()
+                    b.fill()
+                default:
+                    break
+                }
+            }
+            NSGraphicsContext.current = previous
+        }
+
+        // PDF flavor (vector).
+        let pdfData = NSMutableData()
+        guard let consumer = CGDataConsumer(data: pdfData as CFMutableData) else { return nil }
+        var mediaBox = CGRect(origin: .zero, size: union.size)
+        guard let pdfCtx = CGContext(consumer: consumer, mediaBox: &mediaBox, nil) else { return nil }
+        pdfCtx.beginPDFPage(nil)
+        drawAll(into: pdfCtx)
+        pdfCtx.endPDFPage()
+        pdfCtx.closePDF()
+
+        // PNG flavor (3x, transparent).
+        var pngData: Data?
+        let scale: CGFloat = 3
+        if let ctx = CGContext(
+            data: nil, width: Int(union.width * scale), height: Int(union.height * scale),
+            bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) {
+            ctx.scaleBy(x: scale, y: scale)
+            drawAll(into: ctx)
+            if let image = ctx.makeImage() {
+                pngData = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])
+            }
+        }
+        return (pdfData as Data, pngData)
+    }
+
     /// Minimum distance from `point` to the path's stroked centerline.
     static func pathDistance(_ path: NSBezierPath, to point: CGPoint) -> CGFloat {
         let flat = path.flattened

@@ -297,6 +297,10 @@ final class AppState {
     var selectedAnnotations: [PDFAnnotation] = []
     var selectedAnnotationPage: PDFPage?
 
+    // Annotation clipboard (internal; the system pasteboard gets an image render)
+    @ObservationIgnored var annotationClipboard: [PDFAnnotation] = []
+    @ObservationIgnored var pasteCascade = 0
+
     // Search
     var searchText = ""
     var searchResults: [PDFSelection] = []

@@ -92,6 +92,18 @@ struct AppCommands: Commands {
                 .disabled(!appState.hasDocument)
         }
 
+        CommandGroup(replacing: .pasteboard) {
+            Button("Cut") { appState.performCut() }
+                .keyboardShortcut("x")
+            Button("Copy") { appState.performCopy() }
+                .keyboardShortcut("c")
+            Button("Paste") { appState.performPaste() }
+                .keyboardShortcut("v")
+            Button("Duplicate") { appState.duplicateSelection() }
+                .keyboardShortcut("d")
+                .disabled(appState.selectedAnnotations.isEmpty)
+        }
+
         CommandGroup(replacing: .undoRedo) {
             Button("Undo") { appState.performUndo() }
                 .keyboardShortcut("z")
