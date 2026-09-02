@@ -281,6 +281,12 @@ struct QuasimodeHUD: View {
                         .foregroundStyle(.secondary)
                 }
                 HStack(spacing: 5) {
+                    keycap("D", active: false)
+                    Text("Dot")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                HStack(spacing: 5) {
                     keycap("G", active: false)
                     Text(appState.gridSnap ? "Grid ✓" : "Grid ✗")
                         .font(.caption)

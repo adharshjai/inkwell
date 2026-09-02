@@ -974,6 +974,22 @@ final class ToolPDFView: PDFView {
         super.keyUp(with: event)
     }
 
+    private func placeDotAtCursor() {
+        guard let appState, let window else { return }
+        let viewPoint = convert(window.mouseLocationOutsideOfEventStream, from: nil)
+        guard bounds.contains(viewPoint),
+              let page = page(for: viewPoint, nearest: true) else { return }
+        var point = convert(viewPoint, to: page)
+        guard page.bounds(for: .cropBox).insetBy(dx: -2, dy: -2).contains(point) else { return }
+        point = appState.snapIfEnabled(point)
+        if let dot = Annotations.makeStroke(
+            points: [point], color: appState.inkColor, width: appState.inkWidth
+        ) {
+            Annotations.add(dot, to: page, state: appState, actionName: "Dot")
+            Haptics.tick()
+        }
+    }
+
     // MARK: - Context menu
 
     override func menu(for event: NSEvent) -> NSMenu? {
