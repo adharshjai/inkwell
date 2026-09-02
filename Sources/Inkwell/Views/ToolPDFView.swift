@@ -25,8 +25,8 @@ final class ToolPDFView: PDFView {
     private var marqueePage: PDFPage?
     private var marqueeAdditive = false
     private var pendingShiftToggle: PDFAnnotation?
-    private var resizeAnnotation: PDFAnnotation?
-    private var resizeOriginal: Annotations.Geometry?
+    private var resizeTargets: [(annotation: PDFAnnotation, original: Annotations.Geometry)] = []
+    private var resizeUnionOriginal: CGRect = .zero
     private var resizeCorner: Int?
 
     // Inline text editing
@@ -270,16 +270,15 @@ final class ToolPDFView: PDFView {
 
         switch appState.tool {
         case .select:
-            // 1. Corner handle of the single selected annotation → resize.
-            if appState.selectedAnnotations.count == 1,
-               let annotation = appState.selectedAnnotations.first,
-               Annotations.isResizable(annotation),
-               let selectionPage = appState.selectedAnnotationPage,
-               selectionPage === page,
-               let corner = handleIndex(at: point, bounds: annotation.bounds) {
-                resizeAnnotation = annotation
+            // 1. Corner handle of the selection's union box → group resize.
+            if let union = resizableSelectionUnion(),
+               appState.selectedAnnotationPage === page,
+               let corner = handleIndex(at: point, bounds: union) {
+                resizeTargets = appState.selectedAnnotations.map {
+                    (annotation: $0, original: Annotations.Geometry(of: $0))
+                }
+                resizeUnionOriginal = union
                 resizeCorner = corner
-                resizeOriginal = Annotations.Geometry(of: annotation)
                 return
             }
             // 2. Click on an annotation → select (⇧ toggles) and start moving.
@@ -361,13 +360,22 @@ final class ToolPDFView: PDFView {
 
         switch appState.tool {
         case .select:
-            if let annotation = resizeAnnotation, let original = resizeOriginal, let corner = resizeCorner,
+            if !resizeTargets.isEmpty, let corner = resizeCorner,
                let page = appState.selectedAnnotationPage,
                let (eventPage, point) = pagePoint(for: event), eventPage === page {
-                Annotations.applyScale(
-                    annotation, from: original,
-                    to: boundsForResize(original: original.bounds, corner: corner, to: point)
-                )
+                let newUnion = boundsForResize(original: resizeUnionOriginal, corner: corner, to: point)
+                let sx = newUnion.width / max(resizeUnionOriginal.width, 0.01)
+                let sy = newUnion.height / max(resizeUnionOriginal.height, 0.01)
+                for target in resizeTargets {
+                    let o = target.original.bounds
+                    let memberBounds = CGRect(
+                        x: newUnion.minX + (o.minX - resizeUnionOriginal.minX) * sx,
+                        y: newUnion.minY + (o.minY - resizeUnionOriginal.minY) * sy,
+                        width: o.width * sx,
+                        height: o.height * sy
+                    )
+                    Annotations.applyScale(target.annotation, from: target.original, to: memberBounds)
+                }
                 refreshSelectionOverlay()
                 return
             }
@@ -420,11 +428,14 @@ final class ToolPDFView: PDFView {
 
         switch appState.tool {
         case .select:
-            if let annotation = resizeAnnotation, let original = resizeOriginal {
-                Annotations.registerResize(of: annotation, before: original, state: appState)
+            if !resizeTargets.isEmpty {
+                appState.undoManager?.beginUndoGrouping()
+                for target in resizeTargets {
+                    Annotations.registerResize(of: target.annotation, before: target.original, state: appState)
+                }
+                appState.undoManager?.endUndoGrouping()
                 Haptics.snap()
-                resizeAnnotation = nil
-                resizeOriginal = nil
+                resizeTargets = []
                 resizeCorner = nil
                 refreshSelectionOverlay()
                 return
@@ -616,6 +627,8 @@ final class ToolPDFView: PDFView {
         lastDragPoint = nil
         dragAnnotations = []
         dragPage = nil
+        resizeTargets = []
+        resizeCorner = nil
         marqueeStartView = nil
         marqueePage = nil
         pendingShiftToggle = nil
@@ -1207,6 +1220,17 @@ final class ToolPDFView: PDFView {
         }
     }
 
+    /// Union bounds (page space) of a selection in which every member can be
+    /// resized; nil when the selection is empty or mixed.
+    private func resizableSelectionUnion() -> CGRect? {
+        guard let appState, !appState.selectedAnnotations.isEmpty,
+              appState.selectedAnnotations.allSatisfy({ Annotations.isResizable($0) })
+        else { return nil }
+        var union = appState.selectedAnnotations[0].bounds
+        for a in appState.selectedAnnotations.dropFirst() { union = union.union(a.bounds) }
+        return union
+    }
+
     /// Which corner of `bounds` (page space) sits under the click, if any.
     /// 0 = bottom-left, 1 = bottom-right, 2 = top-left, 3 = top-right.
     private func handleIndex(at point: CGPoint, bounds: CGRect) -> Int? {
@@ -1309,10 +1333,8 @@ final class ToolPDFView: PDFView {
             for annotation in appState.selectedAnnotations {
                 rects.append(convert(annotation.bounds, from: page).insetBy(dx: -3, dy: -3))
             }
-            if appState.selectedAnnotations.count == 1,
-               let annotation = appState.selectedAnnotations.first,
-               Annotations.isResizable(annotation) {
-                let b = convert(annotation.bounds, from: page)
+            if let union = resizableSelectionUnion() {
+                let b = convert(union, from: page)
                 let s: CGFloat = 7
                 for c in [
                     CGPoint(x: b.minX, y: b.minY), CGPoint(x: b.maxX, y: b.minY),
