@@ -21,6 +21,7 @@ enum SelfTest {
         testPreciseHit()
         testBucketFill()
         testClipboard()
+        testCompactSave()
         testCrispVisibilityPolicy()
         testPaperTemplates()
         testStamps()
@@ -677,6 +678,39 @@ enum SelfTest {
         // System pasteboard got an image render.
         let pasteboard = NSPasteboard.general
         check(pasteboard.data(forType: .pdf) != nil, "system pasteboard holds a PDF render")
+    }
+
+    // MARK: Compact save
+
+    private static func testCompactSave() {
+        print("Compact save:")
+        let state = AppState()
+        state.hidesOwnAnnotations = true
+        guard let doc = PDFDocument(data: PaperTemplate.blank.pageData()),
+              let page = doc.page(at: 0) else {
+            check(false, "blank doc")
+            return
+        }
+        state.document = doc
+        let points = stride(from: 0, through: 80, by: 4).map { t in CGPoint(x: 150 + t, y: 300) }
+        if let stroke = Annotations.makeStroke(points: points, color: .black, width: 3) {
+            Annotations.add(stroke, to: page, state: state, actionName: "Draw")
+        }
+        let annotationsBefore = page.annotations.count
+        let pageBefore = doc.page(at: 0)
+
+        guard let data = state.compactData(), let reloaded = PDFDocument(data: data),
+              let rePage = reloaded.page(at: 0) else {
+            check(false, "compact data builds")
+            return
+        }
+        check(reloaded.pageCount == 1, "compact keeps pages")
+        check(rePage.annotations.filter { $0.type == "Ink" }.count == 1, "compact keeps annotations")
+        check(doc.page(at: 0) === pageBefore && page.annotations.count == annotationsBefore,
+              "live document untouched by compaction")
+        if let render = renderGray(rePage) {
+            check(darkestNear(render, x: 190, y: 300) < 128, "compact copy renders the ink")
+        }
     }
 
     // MARK: Crisp-rendering visibility policy
