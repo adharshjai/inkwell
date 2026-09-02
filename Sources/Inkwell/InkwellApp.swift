@@ -90,6 +90,7 @@ struct AppCommands: Commands {
                 .disabled(!appState.hasDocument)
             Button("Append Another PDF…") { appState.appendPDFViaPanel() }
                 .disabled(!appState.hasDocument)
+            Button("Backups…") { appState.revealBackupsInFinder() }
         }
 
         CommandGroup(replacing: .pasteboard) {

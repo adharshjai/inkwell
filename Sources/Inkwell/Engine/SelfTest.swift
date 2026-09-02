@@ -22,6 +22,8 @@ enum SelfTest {
         testBucketFill()
         testClipboard()
         testCompactSave()
+        testSaveStaysCompact()
+        testBackupRotation()
         testCrispVisibilityPolicy()
         testPaperTemplates()
         testStamps()
@@ -711,6 +713,93 @@ enum SelfTest {
         if let render = renderGray(rePage) {
             check(darkestNear(render, x: 190, y: 300) < 128, "compact copy renders the ink")
         }
+    }
+
+    // MARK: Anti-bloat tripwire & backup rotation
+
+    private static func testSaveStaysCompact() {
+        print("Save stays compact (bloat tripwire):")
+        let fm = FileManager.default
+        let dir = fm.temporaryDirectory.appendingPathComponent("inkwell-bloat-\(UUID().uuidString)")
+        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("doc.pdf")
+
+        func size() -> Int {
+            (try? fm.attributesOfItem(atPath: file.path)[.size] as? Int) ?? 0
+        }
+
+        // Cycle: open from URL, add a stroke, save through the app's compact
+        // path. If anyone ever reverts to PDFKit's appending write, sizes
+        // explode geometrically and this fails.
+        var sizes: [Int] = []
+        // Seed file.
+        do {
+            let state = AppState()
+            state.document = PDFDocument(data: PaperTemplate.blank.pageData())
+            _ = state.writeCompact(to: file)
+            sizes.append(size())
+        }
+        for cycle in 0..<3 {
+            let state = AppState()
+            state.hidesOwnAnnotations = true
+            guard let doc = PDFDocument(url: file), let page = doc.page(at: 0) else {
+                check(false, "cycle \(cycle) reopen")
+                return
+            }
+            state.document = doc
+            state.hideOwnAnnotationsFromPDFView()
+            let y = 200 + CGFloat(cycle) * 40
+            let points = stride(from: 0, through: 60, by: 4).map { t in CGPoint(x: 100 + t, y: y) }
+            if let stroke = Annotations.makeStroke(points: points, color: .black, width: 2) {
+                Annotations.add(stroke, to: page, state: state, actionName: "Draw")
+            }
+            check(state.writeCompact(to: file), "cycle \(cycle) saves")
+            sizes.append(size())
+        }
+        // Each save adds one small stroke: growth must be modest and linear,
+        // never multiplicative.
+        for i in 1..<sizes.count {
+            check(
+                sizes[i] < sizes[i - 1] + 60_000 && sizes[i] < sizes[0] * 3 + 120_000,
+                "size after save \(i) stays linear (\(sizes[i]) bytes)",
+                "sizes: \(sizes)"
+            )
+        }
+        // Reopen and confirm every stroke survived all cycles.
+        if let final = PDFDocument(url: file), let page = final.page(at: 0) {
+            check(page.annotations.filter { $0.type == "Ink" }.count == 3, "all strokes survive the cycles")
+        } else {
+            check(false, "final reopen")
+        }
+    }
+
+    private static func testBackupRotation() {
+        print("Backup rotation:")
+        let state = AppState()
+        let fm = FileManager.default
+        let base = "SelfTestDoc-\(UUID().uuidString.prefix(6))"
+        let dir = fm.temporaryDirectory.appendingPathComponent("inkwell-bak-src-\(UUID().uuidString)")
+        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer {
+            try? fm.removeItem(at: dir)
+            state.pruneBackups(for: base, keep: 0)
+        }
+        let file = dir.appendingPathComponent("\(base).pdf")
+        try? PaperTemplate.blank.pageData().write(to: file)
+
+        state.backupExistingFile(at: file)
+        let backups = { (try? fm.contentsOfDirectory(atPath: state.backupsDirectory.path)) ?? [] }
+        check(backups().contains { $0.hasPrefix(base + " ") }, "save archives the previous version")
+
+        // Seed 8 fake dated backups; prune must keep only 5.
+        for i in 0..<8 {
+            let fake = state.backupsDirectory.appendingPathComponent("\(base) fake\(i).pdf")
+            try? Data("x".utf8).write(to: fake)
+        }
+        state.pruneBackups(for: base, keep: 5)
+        let remaining = backups().filter { $0.hasPrefix(base + " ") }.count
+        check(remaining == 5, "prune keeps exactly 5", "kept \(remaining)")
     }
 
     // MARK: Crisp-rendering visibility policy

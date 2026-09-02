@@ -51,6 +51,9 @@ extension AppState {
         undoManager?.removeAllActions()
         if doc.isLocked {
             flash("This PDF is password-protected — unlock it to annotate")
+        } else if let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size]) as? Int,
+                  size > 15_000_000, size / max(doc.pageCount, 1) > 3_000_000 {
+            flash("This file is carrying old save bloat (\(Exporter.formatBytes(size))) — press ⌘S once to shrink it.", seconds: 5)
         }
         NotificationCenter.default.addObserver(
             forName: .PDFDocumentDidUnlock, object: doc, queue: .main
@@ -138,15 +141,69 @@ extension AppState {
         compactDocument()?.dataRepresentation()
     }
 
+    /// Where rolling save backups live (last 5 versions per document).
+    var backupsDirectory: URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Inkwell/Backups", isDirectory: true)
+        try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        return base
+    }
+
+    /// Before overwriting a document, tuck the current on-disk version away.
+    /// The safety net that makes "the app ate my work" impossible to repeat.
+    func backupExistingFile(at url: URL) {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: url.path),
+              let size = (try? fm.attributesOfItem(atPath: url.path)[.size]) as? Int,
+              size < 100_000_000 // never archive bloat-era monsters
+        else { return }
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HHmmss"
+        let base = url.deletingPathExtension().lastPathComponent
+        let dest = backupsDirectory
+            .appendingPathComponent("\(base) \(formatter.string(from: Date())).pdf")
+        try? fm.copyItem(at: url, to: dest)
+        pruneBackups(for: base)
+    }
+
+    func pruneBackups(for base: String, keep: Int = 5) {
+        let fm = FileManager.default
+        guard let items = try? fm.contentsOfDirectory(
+            at: backupsDirectory, includingPropertiesForKeys: [.contentModificationDateKey]
+        ) else { return }
+        let mine = items
+            .filter { $0.lastPathComponent.hasPrefix(base + " ") && $0.pathExtension == "pdf" }
+            .sorted { a, b in
+                let da = (try? a.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+                let db = (try? b.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+                return da > db
+            }
+        for old in mine.dropFirst(keep) {
+            try? fm.removeItem(at: old)
+        }
+    }
+
+    func revealBackupsInFinder() {
+        NSWorkspace.shared.activateFileViewerSelecting([backupsDirectory])
+    }
+
     @discardableResult
     func save() -> Bool {
         pdfView?.commitTextEditing()
         guard let document else { return false }
         guard let url = documentURL else { return saveAs() }
         _ = document
+        backupExistingFile(at: url)
         if writeCompact(to: url) {
             isDirty = false
-            flash("Saved")
+            // Watchdog: a compact save of homework-scale documents should be
+            // megabytes. Anything huge means a bloat regression — say so.
+            if let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size]) as? Int,
+               size > 40_000_000 {
+                flash("⚠️ Saved, but the file is \(Exporter.formatBytes(size)) — unusually large. A backup of the previous version is in File ▸ Backups.", seconds: 6)
+            } else {
+                flash("Saved")
+            }
             return true
         }
         return offerSaveAsRecovery(failedURL: url)
