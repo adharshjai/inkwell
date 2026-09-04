@@ -244,7 +244,7 @@ final class AppState {
         notesMode.toggle()
         if notesMode {
             tool = .select
-            flash("Notes — drag to box-select · T to type · hold F to draw · S shapes · W wires · E erase", seconds: 4.5)
+            flash("Notes — drag to box-select · T to type · hold F to draw (tap F = dot) · S shapes · W wires · E erase", seconds: 4.5)
         } else {
             tool = .select
             activeQuasimode = nil

@@ -668,11 +668,19 @@ final class ToolPDFView: PDFView {
             eraserGroupOpen = false
         }
 
-        // A quick tap (instead of a hold) teaches the gesture — and for E,
-        // keeps the old "tap to switch to the eraser tool" behavior.
-        if !cancelled, !quasiDidAct, elapsed < 0.35 {
+        // A quick F tap dots the i (and the decimal): hover and tap
+        // mid-handwriting without leaving the glide flow. Fires whenever the
+        // short press didn't commit a stroke, so cursor jitter can't swallow
+        // the dot. Other modes teach their gesture; E keeps tap-to-switch.
+        if !cancelled, mode == .ink, elapsed < 0.35 {
+            let travel = zip(quasiPoints, quasiPoints.dropFirst())
+                .reduce(CGFloat(0)) { $0 + $1.0.distance(to: $1.1) }
+            if quasiPoints.count < 2 || travel <= 2.5 {
+                placeDotAtCursor()
+            }
+        } else if !cancelled, !quasiDidAct, elapsed < 0.35 {
             switch mode {
-            case .ink: appState.flash("Hold F and glide on the trackpad to draw — no clicking")
+            case .ink: break
             case .shape: appState.flash("Hold S and sketch roughly — the shape snaps clean when you let go")
             case .wire: appState.flash("Hold W and click corner points to route a clean line")
             case .erase:
