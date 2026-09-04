@@ -439,8 +439,9 @@ enum Annotations {
         if travel < detail * 1.25 {
             // A tap. Zero-length capped strokes render as pixelated blobs in
             // PDFKit — emit a crisp solid disc instead (a circle stroked at
-            // twice its radius fills itself completely).
-            let diameter = max(width * 2.2, 3)
+            // twice its radius fills itself completely). Sized to the pen:
+            // a tap marks exactly like the stroke it would have started.
+            let diameter = max(width, 1.0)
             let radius = diameter / 4
             let dot = NSBezierPath(ovalIn: CGRect(
                 x: first.x - radius, y: first.y - radius,
