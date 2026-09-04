@@ -946,6 +946,21 @@ enum SelfTest {
             "PDFKit drew elsewhere — convention mismatch"
         )
 
+        // No dead zone: every non-empty input yields ink — a dot or a stroke —
+        // across a sweep of travel lengths at several zoom-relative details.
+        var dropped: [String] = []
+        for detail in [0.15, 0.6, 1.2, 4.8] as [CGFloat] {
+            for travel in [0.0, 0.3, 0.8, 1.5, 3.0, 8.0] as [CGFloat] {
+                let pts = travel == 0
+                    ? [CGPoint(x: 50, y: 50)]
+                    : [CGPoint(x: 50, y: 50), CGPoint(x: 50 + travel / 2, y: 50), CGPoint(x: 50 + travel, y: 50)]
+                if Annotations.makeStroke(points: pts, color: .black, width: 1.6, detail: detail) == nil {
+                    dropped.append("detail \(detail) travel \(travel)")
+                }
+            }
+        }
+        check(dropped.isEmpty, "no press is ever dropped (dot-or-stroke sweep)", dropped.joined(separator: "; "))
+
         // A pen tap must land as a solid dot, not a zero-length stroke.
         if let dot = Annotations.makeStroke(points: [CGPoint(x: 400, y: 500)], color: .black, width: 1.6) {
             page.addAnnotation(dot)

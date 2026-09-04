@@ -456,10 +456,10 @@ final class ToolPDFView: PDFView {
             // A plain click never commits ink — require a real stroke.
             let travel = zip(strokePoints, strokePoints.dropFirst())
                 .reduce(CGFloat(0)) { $0 + $1.0.distance(to: $1.1) }
-            // A tap (count == 1) is a deliberate dot; travel gate is in screen
-            // terms so deep-zoom microstrokes aren't discarded.
+            _ = travel
+            // makeStroke turns sub-threshold travel into a pen-weight dot, so
+            // no press ever vanishes.
             if let page = strokePage, !strokePoints.isEmpty,
-               strokePoints.count == 1 || travel > 2.0 / max(scaleFactor, 0.25),
                let annotation = Annotations.makeStroke(
                    points: strokePoints,
                    color: appState.activeStrokeColor,
@@ -649,14 +649,15 @@ final class ToolPDFView: PDFView {
         guard let appState, let mode = appState.activeQuasimode else { return }
         let elapsed = Date.timeIntervalSinceReferenceDate - quasiStartTime
 
+        var committed = false
         if cancelled {
             clearPreview()
         } else {
             switch mode {
             case .ink:
-                commitQuasiStroke(beautify: false)
+                committed = commitQuasiStroke(beautify: false)
             case .shape:
-                commitQuasiStroke(beautify: true)
+                committed = commitQuasiStroke(beautify: true)
             case .wire:
                 commitWire()
             case .erase:
@@ -672,13 +673,9 @@ final class ToolPDFView: PDFView {
         // mid-handwriting without leaving the glide flow. Fires whenever the
         // short press didn't commit a stroke, so cursor jitter can't swallow
         // the dot. Other modes teach their gesture; E keeps tap-to-switch.
-        if !cancelled, mode == .ink, elapsed < 0.35 {
-            let travel = zip(quasiPoints, quasiPoints.dropFirst())
-                .reduce(CGFloat(0)) { $0 + $1.0.distance(to: $1.1) }
-            if quasiPoints.count < 2 || travel <= 2.5 {
-                placeDotAtCursor()
-            }
-        } else if !cancelled, !quasiDidAct, elapsed < 0.35 {
+        if !cancelled, mode == .ink, elapsed < 0.35, !committed {
+            placeDotAtCursor()
+        } else if !cancelled, !quasiDidAct, elapsed < 0.35, !committed {
             switch mode {
             case .ink: break
             case .shape: appState.flash("Hold S and sketch roughly — the shape snaps clean when you let go")
@@ -768,12 +765,25 @@ final class ToolPDFView: PDFView {
         showPreview(path, color: appState.inkColor.withAlphaComponent(0.7), width: appState.inkWidth)
     }
 
-    private func commitQuasiStroke(beautify: Bool) {
+    @discardableResult
+    private func commitQuasiStroke(beautify: Bool) -> Bool {
         clearPreview()
-        guard let appState, let page = quasiPage, quasiPoints.count >= 2 else { return }
+        guard let appState, let page = quasiPage, !quasiPoints.isEmpty else { return false }
         let travel = zip(quasiPoints, quasiPoints.dropFirst())
             .reduce(CGFloat(0)) { $0 + $1.0.distance(to: $1.1) }
-        guard travel > 2.5 else { return }
+        // No dead zone: sub-pixel movement commits a pen-weight dot where it
+        // happened; anything more is a real stroke. A fixed page-point gate
+        // here silently swallowed small dashes drawn while zoomed in.
+        if quasiPoints.count < 2 || travel <= 1.0 / max(scaleFactor, 0.25) {
+            if let dot = Annotations.makeStroke(
+                points: [quasiPoints[0]], color: appState.inkColor, width: appState.inkWidth
+            ) {
+                Annotations.add(dot, to: page, state: appState, actionName: "Dot")
+                Haptics.tick()
+                return true
+            }
+            return false
+        }
 
         if beautify,
            let paths = ShapeRecognizer.beautify(quasiPoints, gridSnap: { [weak appState] p in
@@ -783,8 +793,9 @@ final class ToolPDFView: PDFView {
             if let annotation = Annotations.makeInk(paths: paths, color: appState.inkColor, width: appState.inkWidth) {
                 Annotations.add(annotation, to: page, state: appState, actionName: "Shape")
                 Haptics.snap()
+                return true
             }
-            return
+            return false
         }
 
         if let annotation = Annotations.makeStroke(
@@ -793,7 +804,9 @@ final class ToolPDFView: PDFView {
         ) {
             Annotations.add(annotation, to: page, state: appState, actionName: "Draw")
             Haptics.tick()
+            return true
         }
+        return false
     }
 
     private func commitWire() {
