@@ -188,6 +188,7 @@ final class ToolPDFView: PDFView {
             MainActor.assumeIsolated {
                 self?.repositionTextEditor()
                 self?.refreshSelectionOverlay()
+                self?.appState?.insertionGap = nil
                 self?.autoExtendIfNeeded()
                 // Freshly scrolled-in tiles can carry stale low-res annotation
                 // caches too — settle-invalidate just like after a zoom.
@@ -721,9 +722,47 @@ final class ToolPDFView: PDFView {
 
     override func mouseMoved(with event: NSEvent) {
         guard let appState, let mode = appState.activeQuasimode else {
+            updateInsertionGap(at: convert(event.locationInWindow, from: nil))
             return super.mouseMoved(with: event)
         }
         handleQuasiMotion(mode, event: event)
+    }
+
+    /// Is the cursor in the space between pages (or just below the last one /
+    /// above the first)? That's where the insertion bar lives.
+    private func updateInsertionGap(at viewPoint: CGPoint) {
+        guard let appState, let document, appState.hasDocument, textEditor == nil else { return }
+        var found: InsertionGap?
+        let probe = bounds.insetBy(dx: 0, dy: -300)
+        var rects: [Int: CGRect] = [:]
+        for index in 0..<document.pageCount {
+            guard let page = document.page(at: index) else { continue }
+            let rect = convert(page.bounds(for: .cropBox), from: page)
+            if rect.intersects(probe) { rects[index] = rect }
+        }
+        for (index, rect) in rects.sorted(by: { $0.key < $1.key }) {
+            if rect.contains(viewPoint) { break }
+            // Gap below this page: down to the next page's top, or a strip
+            // below the last page.
+            let nextTop = rects[index + 1]?.maxY ?? (index + 1 < document.pageCount ? nil : rect.minY - 64)
+            if let nextTop {
+                let gap = CGRect(x: rect.minX, y: nextTop, width: rect.width, height: max(rect.minY - nextTop, 0))
+                if gap.height > 8, gap.contains(viewPoint) {
+                    found = InsertionGap(index: index + 1, viewRect: gap)
+                    break
+                }
+            }
+            if index == 0 {
+                let above = CGRect(x: rect.minX, y: rect.maxY, width: rect.width, height: 64)
+                if above.contains(viewPoint) {
+                    found = InsertionGap(index: 0, viewRect: above)
+                    break
+                }
+            }
+        }
+        if found != appState.insertionGap {
+            appState.insertionGap = found
+        }
     }
 
     private func handleQuasiMotion(_ mode: Quasimode, event: NSEvent) {

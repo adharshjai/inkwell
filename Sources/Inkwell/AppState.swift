@@ -124,6 +124,13 @@ enum InspectorTab: String, CaseIterable, Identifiable {
     }
 }
 
+/// The space between two pages (or below the last / above the first) that
+/// the cursor is hovering — where the insertion bar appears.
+struct InsertionGap: Equatable {
+    let index: Int        // page index a new page would take
+    let viewRect: CGRect  // gap rect in PDFView coordinates
+}
+
 // MARK: - App state
 
 @MainActor
@@ -184,6 +191,7 @@ final class AppState {
     }
 
     var pendingPlacement: PendingPlacement?
+    var insertionGap: InsertionGap?
 
     // Notes mode & quasimodes
     var notesMode = false

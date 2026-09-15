@@ -247,12 +247,105 @@ extension AppState {
 
     // MARK: Page operations (all undoable)
 
-    func insertPaper(_ template: PaperTemplate) {
+    func insertPaper(_ template: PaperTemplate, at position: Int? = nil) {
         guard let document else { return }
         guard let page = PDFDocument(data: template.pageData())?.page(at: 0) else { return }
-        let index = min(currentPageIndex + 1, document.pageCount)
+        let index = min(position ?? (currentPageIndex + 1), document.pageCount)
         insertPage(page, at: index, actionName: "Insert \(template.displayName) Page")
-        flash("\(template.displayName) page added after page \(index)")
+        insertionGap = nil
+        goToPage(index)
+        flash("\(template.displayName) page inserted as page \(index + 1)")
+    }
+
+    // MARK: Insert images & PDFs at a position
+
+    static let imageTypes: [UTType] = [.png, .jpeg, .tiff, .heic, .gif, .bmp, .webP]
+
+    func insertImagePage(at position: Int) {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = Self.imageTypes
+        panel.allowsMultipleSelection = true
+        panel.message = "Choose images — each becomes its own page"
+        guard panel.runModal() == .OK else { return }
+        var index = position
+        for url in panel.urls {
+            if insertImagePage(from: url, at: index) { index += 1 }
+        }
+    }
+
+    /// Inserts an image file as a new page (letter-sized, orientation follows
+    /// the image, aspect-fit inside a margin) so it can be annotated like any
+    /// other page. Returns false if the file isn't a readable image.
+    @discardableResult
+    func insertImagePage(from url: URL, at position: Int) -> Bool {
+        guard let document, let image = NSImage(contentsOf: url),
+              let data = Self.makeImagePage(image: image),
+              let page = PDFDocument(data: data)?.page(at: 0) else {
+            flash("Couldn’t read \(url.lastPathComponent) as an image")
+            return false
+        }
+        let index = min(max(position, 0), document.pageCount)
+        insertPage(page, at: index, actionName: "Insert Image Page")
+        insertionGap = nil
+        goToPage(index)
+        flash("\(url.lastPathComponent) inserted as page \(index + 1)")
+        return true
+    }
+
+    /// One US-Letter PDF page with the image aspect-fit inside a 36pt margin;
+    /// landscape when the image is wider than tall.
+    static func makeImagePage(image: NSImage) -> Data? {
+        guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
+        let imageSize = CGSize(width: cgImage.width, height: cgImage.height)
+        let landscape = imageSize.width > imageSize.height
+        var mediaBox = landscape
+            ? CGRect(x: 0, y: 0, width: 792, height: 612)
+            : CGRect(x: 0, y: 0, width: 612, height: 792)
+        let data = NSMutableData()
+        guard let consumer = CGDataConsumer(data: data as CFMutableData),
+              let ctx = CGContext(consumer: consumer, mediaBox: &mediaBox, nil) else { return nil }
+        ctx.beginPDFPage(nil)
+        ctx.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+        ctx.fill(mediaBox)
+        let area = mediaBox.insetBy(dx: 36, dy: 36)
+        let scale = min(area.width / imageSize.width, area.height / imageSize.height)
+        let drawSize = CGSize(width: imageSize.width * scale, height: imageSize.height * scale)
+        let drawRect = CGRect(
+            x: area.midX - drawSize.width / 2, y: area.midY - drawSize.height / 2,
+            width: drawSize.width, height: drawSize.height
+        )
+        ctx.interpolationQuality = .high
+        ctx.draw(cgImage, in: drawRect)
+        ctx.endPDFPage()
+        ctx.closePDF()
+        return data as Data
+    }
+
+    func insertPDFPages(at position: Int) {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.pdf]
+        panel.message = "Choose a PDF — its pages are inserted here"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        insertPDFPages(from: url, at: position)
+    }
+
+    func insertPDFPages(from url: URL, at position: Int) {
+        guard let document, let other = PDFDocument(url: url) else {
+            flash("Couldn’t read \(url.lastPathComponent)")
+            return
+        }
+        let start = min(max(position, 0), document.pageCount)
+        undoManager?.beginUndoGrouping()
+        for i in 0..<other.pageCount {
+            if let page = other.page(at: i) {
+                insertPage(page, at: start + i, actionName: "Insert PDF Pages")
+            }
+        }
+        undoManager?.endUndoGrouping()
+        hideOwnAnnotationsFromPDFView()
+        insertionGap = nil
+        goToPage(start)
+        flash("Inserted \(other.pageCount) page\(other.pageCount == 1 ? "" : "s") from \(url.lastPathComponent)")
     }
 
     func insertPage(_ page: PDFPage, at index: Int, actionName: String) {

@@ -56,6 +56,18 @@ struct ContentView: View {
                         .transition(.move(edge: .top).combined(with: .opacity))
                 }
             }
+            .overlay {
+                // Between-pages insertion bar, positioned over the hovered gap.
+                // PDFView is unflipped (y up); SwiftUI is y down.
+                GeometryReader { geo in
+                    if let gap = appState.insertionGap {
+                        InsertionBar(appState: appState, index: gap.index)
+                            .position(x: gap.viewRect.midX, y: geo.size.height - gap.viewRect.midY)
+                            .transition(.opacity)
+                    }
+                }
+                .animation(.easeOut(duration: 0.12), value: appState.insertionGap)
+            }
         }
         .inspector(isPresented: inspectorBinding) {
             InspectorView(appState: appState)
@@ -241,14 +253,87 @@ struct ContentView: View {
                 } else if let u = item as? URL {
                     url = u
                 }
-                guard let url, url.pathExtension.lowercased() == "pdf" else { return }
+                guard let url else { return }
+                let ext = url.pathExtension.lowercased()
                 Task { @MainActor in
-                    appState.openDocument(at: url)
+                    if ext == "pdf" {
+                        appState.openDocument(at: url)
+                    } else if ["png", "jpg", "jpeg", "tiff", "tif", "heic", "gif", "bmp", "webp"].contains(ext) {
+                        if appState.hasDocument {
+                            let index = appState.insertionGap?.index ?? (appState.currentPageIndex + 1)
+                            appState.insertImagePage(from: url, at: index)
+                        } else {
+                            appState.newDocument(template: .blank)
+                            appState.insertImagePage(from: url, at: 0)
+                            appState.removePage(at: 1, actionName: "Replace Blank Page")
+                        }
+                    }
                 }
             }
             return true
         }
         return false
+    }
+}
+
+// MARK: - Insertion bar
+
+/// Glass bar that appears in the gap between pages: add paper, drop in an
+/// image as a page, or splice another PDF's pages in right here.
+struct InsertionBar: View {
+    let appState: AppState
+    let index: Int
+
+    var body: some View {
+        GlassEffectContainer(spacing: 8) {
+            HStack(spacing: 4) {
+                Menu {
+                    ForEach(PaperTemplate.allCases) { template in
+                        Button {
+                            appState.insertPaper(template, at: index)
+                        } label: {
+                            Label(template.displayName, systemImage: template.systemImage)
+                        }
+                    }
+                } label: {
+                    Label("Add Page", systemImage: "plus.rectangle.portrait")
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
+                        .contentShape(Capsule())
+                }
+                .menuStyle(.button)
+                .buttonStyle(.plain)
+                .help("Insert a blank, ruled, grid, graph, or engineering page here")
+
+                Divider().frame(height: 16)
+
+                Button {
+                    appState.insertImagePage(at: index)
+                } label: {
+                    Label("Image…", systemImage: "photo")
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
+                        .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .help("Insert an image as a page you can annotate (or just drop an image file on the window)")
+
+                Button {
+                    appState.insertPDFPages(at: index)
+                } label: {
+                    Label("PDF…", systemImage: "doc.on.doc")
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
+                        .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .help("Insert another PDF's pages here")
+            }
+            .font(.callout)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .glassEffect(.regular, in: .capsule)
+        }
     }
 }
 

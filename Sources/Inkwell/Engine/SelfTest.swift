@@ -25,6 +25,7 @@ enum SelfTest {
         testSaveStaysCompact()
         testBackupRotation()
         testTextBoxes()
+        testImagePages()
         testCrispVisibilityPolicy()
         testPaperTemplates()
         testStamps()
@@ -791,6 +792,33 @@ enum SelfTest {
         state.pruneBackups(for: base, keep: 5)
         let remaining = backups().filter { $0.hasPrefix(base + " ") }.count
         check(remaining == 5, "prune keeps exactly 5", "kept \(remaining)")
+    }
+
+    // MARK: Image pages
+
+    private static func testImagePages() {
+        print("Image pages:")
+        let wide = NSImage(size: NSSize(width: 400, height: 200))
+        wide.lockFocus()
+        NSColor.black.setFill()
+        NSRect(x: 0, y: 0, width: 400, height: 200).fill()
+        wide.unlockFocus()
+        guard let data = AppState.makeImagePage(image: wide),
+              let doc = PDFDocument(data: data), let page = doc.page(at: 0) else {
+            check(false, "image page builds")
+            return
+        }
+        let box = page.bounds(for: .mediaBox)
+        check(doc.pageCount == 1 && abs(box.width - 792) < 1 && abs(box.height - 612) < 1,
+              "wide image gets a landscape letter page")
+        if let render = renderGray(page) {
+            check(darkestNear(render, x: 396, y: 306) < 128, "image is drawn on the page")
+            check(sample(render, x: 10, y: 10) > 240, "margin stays white")
+        }
+        let tall = NSImage(size: NSSize(width: 200, height: 400))
+        if let d2 = AppState.makeImagePage(image: tall), let p2 = PDFDocument(data: d2)?.page(at: 0) {
+            check(abs(p2.bounds(for: .mediaBox).height - 792) < 1, "tall image gets a portrait page")
+        }
     }
 
     // MARK: Text boxes (PowerPoint model)
