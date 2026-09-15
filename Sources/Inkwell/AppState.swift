@@ -154,6 +154,34 @@ final class AppState {
     /// Eraser reach in screen points (converted to page points at use).
     var eraserSize: CGFloat = 4
     var fontSize: CGFloat = 13
+    var textBold = false
+    var textItalic = false
+    var textAlignment: NSTextAlignment = .left
+
+    /// Text boxes the formatting controls act on: the one being edited, else
+    /// the selected ones. Changes register as one undoable step.
+    var styleTargetTextBoxes: [PDFAnnotation] {
+        if let editing = pdfView?.editingTextAnnotation { return [editing] }
+        return selectedAnnotations.filter { $0.type == "FreeText" }
+    }
+
+    func applyTextStyle(size: CGFloat? = nil, bold: Bool? = nil, italic: Bool? = nil, alignment: NSTextAlignment? = nil) {
+        if let size { fontSize = size }
+        if let bold { textBold = bold }
+        if let italic { textItalic = italic }
+        if let alignment { textAlignment = alignment }
+        let targets = styleTargetTextBoxes
+        guard !targets.isEmpty else { return }
+        undoManager?.beginUndoGrouping()
+        for box in targets {
+            let before = Annotations.Geometry(of: box)
+            Annotations.styleText(box, size: size, bold: bold, italic: italic, alignment: alignment)
+            Annotations.registerResize(of: box, before: before, state: self, actionName: "Format Text")
+        }
+        undoManager?.endUndoGrouping()
+        pdfView?.restyleTextEditor()
+        pdfView?.refreshSelectionOverlay()
+    }
 
     var pendingPlacement: PendingPlacement?
 

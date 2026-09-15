@@ -31,6 +31,8 @@ final class ToolPDFView: PDFView {
 
     // Inline text editing
     private var textEditor: InkwellTextView?
+    private var textDragStart: CGPoint?
+    private var textDragPage: PDFPage?
     private var editingAnnotation: PDFAnnotation?
     private var editingPage: PDFPage?
     private var editingIsNew = false
@@ -113,7 +115,7 @@ final class ToolPDFView: PDFView {
             forName: .PDFViewScaleChanged, object: self, queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated {
-                self?.commitTextEditing()
+                self?.repositionTextEditor()
                 self?.refreshSelectionOverlay()
                 self?.appState?.syncZoom()
                 self?.scheduleRenderNudge()
@@ -184,7 +186,7 @@ final class ToolPDFView: PDFView {
             forName: NSView.boundsDidChangeNotification, object: clipView, queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated {
-                self?.commitTextEditing()
+                self?.repositionTextEditor()
                 self?.refreshSelectionOverlay()
                 self?.autoExtendIfNeeded()
                 // Freshly scrolled-in tiles can carry stale low-res annotation
@@ -335,14 +337,10 @@ final class ToolPDFView: PDFView {
                 appState.flash("Filled", seconds: 0.9)
             }
         case .text:
-            // Font size tracks zoom: what you type reads the same size on
-            // screen whether you're at 30% or 800%.
-            let dynamicSize = min(max(appState.fontSize / max(scaleFactor, 0.05), 5), 96)
-            let annotation = Annotations.makeFreeText(
-                "", near: point, on: page,
-                fontSize: dynamicSize, color: appState.inkColor
-            )
-            beginEditingText(annotation: annotation, page: page, isNew: true)
+            // PowerPoint-style: press-and-drag draws the box; a plain click
+            // makes a default-width one. Creation happens on release.
+            textDragStart = point
+            textDragPage = page
         case .line, .arrow, .doubleArrow, .rect, .ellipse, .triangle:
             strokePage = page
             shapeStart = point
@@ -374,7 +372,10 @@ final class ToolPDFView: PDFView {
                         width: o.width * sx,
                         height: o.height * sy
                     )
-                    Annotations.applyScale(target.annotation, from: target.original, to: memberBounds)
+                    Annotations.applyScale(
+                        target.annotation, from: target.original, to: memberBounds,
+                        scaleTextFont: resizeTargets.count > 1
+                    )
                 }
                 refreshSelectionOverlay()
                 return
@@ -417,7 +418,10 @@ final class ToolPDFView: PDFView {
             lastDragPoint = point
             updateShapePreview(from: start, to: point, on: page)
         case .text:
-            break
+            guard let start = textDragStart, let page = textDragPage,
+                  let (eventPage, point) = pagePoint(for: event), eventPage === page else { return }
+            let rect = CGRect(corner: start, corner: point)
+            selectionOverlay.marqueeRect = convert(rect, from: page)
         }
     }
 
@@ -497,8 +501,29 @@ final class ToolPDFView: PDFView {
                 appState.undoManager?.endUndoGrouping()
                 eraserGroupOpen = false
             }
-        case .fill, .text:
+        case .fill:
             break
+        case .text:
+            selectionOverlay.marqueeRect = nil
+            guard let start = textDragStart, let page = textDragPage else { return }
+            textDragStart = nil
+            textDragPage = nil
+            var end = start
+            if let (eventPage, point) = pagePoint(for: event), eventPage === page { end = point }
+            let dragged = CGRect(corner: start, corner: end)
+            let zoom = max(scaleFactor, 0.05)
+            // Font size tracks zoom so what you type reads the same size on
+            // screen at any magnification.
+            let dynamicSize = min(max(appState.fontSize / zoom, 5), 96)
+            let drewBox = dragged.width * scaleFactor > 14
+            let width = drewBox ? dragged.width : min(max(260 / zoom, 80), 900)
+            let topLeft = drewBox ? CGPoint(x: dragged.minX, y: dragged.maxY) : start
+            let annotation = Annotations.makeFreeText(
+                "", near: topLeft, on: page,
+                fontSize: dynamicSize, color: appState.inkColor, width: width,
+                bold: appState.textBold, italic: appState.textItalic, alignment: appState.textAlignment
+            )
+            beginEditingText(annotation: annotation, page: page, isNew: true)
         }
     }
 
@@ -1096,37 +1121,81 @@ final class ToolPDFView: PDFView {
             setNeedsDisplay(bounds)
         }
 
-        let viewRect = convert(annotation.bounds, from: page)
-        let baseFont = annotation.font ?? NSFont.systemFont(ofSize: appState.fontSize)
-        let scaledFont = NSFont.systemFont(ofSize: baseFont.pointSize * scaleFactor)
-
-        let editor = InkwellTextView(frame: CGRect(
-            x: viewRect.minX,
-            y: viewRect.minY,
-            width: max(viewRect.width, 160 * scaleFactor),
-            height: max(viewRect.height, (baseFont.pointSize + 10) * scaleFactor)
-        ))
+        let editor = InkwellTextView(frame: convert(annotation.bounds, from: page))
         editor.string = editingOldContents
-        editor.font = scaledFont
-        // The editor floats over white paper — pin its colors so dark mode
-        // never produces a black box with invisible text.
+        // The editor sits exactly over the box (WYSIWYG): same width, wraps
+        // the same way, grows downward as you type.
+        editor.isHorizontallyResizable = false
+        editor.isVerticallyResizable = true
+        editor.textContainer?.widthTracksTextView = true
+        editor.textContainer?.lineFragmentPadding = 0
+        editor.alignment = annotation.alignment
+        // Colors pinned to paper so dark mode never yields a black box.
         editor.textColor = annotation.fontColor ?? .black
         editor.insertionPointColor = annotation.fontColor ?? .black
         editor.drawsBackground = true
-        editor.backgroundColor = .white
+        editor.backgroundColor = NSColor.white.withAlphaComponent(0.92)
         editor.isRichText = false
         editor.allowsUndo = true
         editor.wantsLayer = true
         editor.layer?.borderColor = NSColor.controlAccentColor.cgColor
         editor.layer?.borderWidth = 1.5
-        editor.layer?.cornerRadius = 4
-        editor.textContainerInset = CGSize(width: 3, height: 3)
+        editor.layer?.cornerRadius = 3
         editor.onCommit = { [weak self, weak editor] in self?.commitTextEditing(from: editor) }
         editor.onCancel = { [weak self, weak editor] in self?.cancelTextEditing(from: editor) }
+        editor.onToggleBold = { [weak self] in self?.toggleEditingTrait(bold: true) }
+        editor.onToggleItalic = { [weak self] in self?.toggleEditingTrait(bold: false) }
         addSubview(editor)
-        window?.makeFirstResponder(editor)
         textEditor = editor
-        appState.flash("Return for a new line · Esc to cancel · click away or ⌘Return to finish", seconds: 3.5)
+        layoutTextEditor()
+        window?.makeFirstResponder(editor)
+        appState.flash("Type away — Return for a new line · Esc or click away to finish · ⌘B/⌘I bold/italic", seconds: 3.5)
+    }
+
+    /// The text box being edited, for the formatting controls.
+    var editingTextAnnotation: PDFAnnotation? { textEditor == nil ? nil : editingAnnotation }
+
+    /// Sizes and places the editor over its box at the current zoom; font and
+    /// insets scale so the editor is the box.
+    private func layoutTextEditor() {
+        guard let editor = textEditor, let annotation = editingAnnotation, let page = editingPage else { return }
+        let baseFont = annotation.font ?? Annotations.textBaseFont(size: 13)
+        let scaled = NSFontManager.shared.convert(baseFont, toSize: baseFont.pointSize * scaleFactor)
+        editor.font = scaled
+        editor.alignment = annotation.alignment
+        editor.textColor = annotation.fontColor ?? .black
+        let inset = Annotations.textInset * scaleFactor
+        editor.textContainerInset = CGSize(width: inset, height: inset)
+        var frame = convert(annotation.bounds, from: page)
+        editor.frame = frame
+        editor.textContainer?.containerSize = CGSize(width: max(frame.width - inset * 2, 8), height: .greatestFiniteMagnitude)
+        editor.minSize = CGSize(width: frame.width, height: 0)
+        editor.maxSize = CGSize(width: frame.width, height: .greatestFiniteMagnitude)
+        editor.growToFit()
+        frame = editor.frame
+        _ = frame
+    }
+
+    /// Scroll/zoom no longer ends the session — the editor just follows.
+    func repositionTextEditor() {
+        guard textEditor != nil else { return }
+        layoutTextEditor()
+    }
+
+    /// ⌘B / ⌘I while typing: whole-box trait toggle, applied live.
+    private func toggleEditingTrait(bold: Bool) {
+        guard let annotation = editingAnnotation else { return }
+        if bold {
+            Annotations.styleText(annotation, bold: !Annotations.textIsBold(annotation))
+        } else {
+            Annotations.styleText(annotation, italic: !Annotations.textIsItalic(annotation))
+        }
+        layoutTextEditor()
+    }
+
+    /// Formatting controls changed the box's style mid-edit: re-skin the editor.
+    func restyleTextEditor() {
+        layoutTextEditor()
     }
 
     /// Commits the active editing session, if any. Safe to call from menu
@@ -1162,10 +1231,12 @@ final class ToolPDFView: PDFView {
             annotation.contents = text
             Annotations.refitFreeText(annotation)
             Annotations.add(annotation, to: page, state: appState, actionName: "Add Text")
-            // In notes, T is a one-shot: type the box, land back in select.
-            if appState.notesMode, appState.tool == .text {
-                appState.tool = .select
-            }
+            // Like PowerPoint: after creating a box you're back in select,
+            // with the new box selected and ready to move or resize.
+            appState.tool = .select
+            appState.selectedAnnotations = [annotation]
+            appState.selectedAnnotationPage = page
+            refreshSelectionOverlay()
         } else {
             if let page = editingPage ?? appState.selectedAnnotationPage {
                 appState.applyDisplayPolicy(annotation, on: page)
@@ -1337,23 +1408,8 @@ final class ToolPDFView: PDFView {
                         path.stroke()
                     }
                     ctx.restoreGState()
-                } else if annotation.type == "FreeText", let text = annotation.contents {
-                    let font = annotation.font ?? NSFont.systemFont(ofSize: 13)
-                    let color = annotation.fontColor ?? .black
-                    ctx.saveGState()
-                    ctx.translateBy(x: b.minX, y: b.maxY)
-                    ctx.scaleBy(x: 1, y: -1)
-                    let previous = NSGraphicsContext.current
-                    NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: true)
-                    NSAttributedString(
-                        string: text,
-                        attributes: [.font: font, .foregroundColor: color]
-                    ).draw(
-                        with: CGRect(x: 2, y: 2, width: max(b.width - 4, 4), height: max(b.height - 4, 4)),
-                        options: [.usesLineFragmentOrigin, .usesFontLeading]
-                    )
-                    NSGraphicsContext.current = previous
-                    ctx.restoreGState()
+                } else if annotation.type == "FreeText" {
+                    Annotations.drawFreeText(annotation, in: ctx)
                 }
             }
             ctx.restoreGState()
@@ -1406,16 +1462,27 @@ final class ToolPDFView: PDFView {
 final class InkwellTextView: NSTextView {
     var onCommit: (() -> Void)?
     var onCancel: (() -> Void)?
+    var onToggleBold: (() -> Void)?
+    var onToggleItalic: (() -> Void)?
 
     private let sessionUndoManager = UndoManager()
     override var undoManager: UndoManager? { sessionUndoManager }
 
+    /// Esc leaves edit mode keeping the text (PowerPoint behavior).
     override func cancelOperation(_ sender: Any?) {
-        onCancel?()
+        onCommit?()
     }
 
     override func keyDown(with event: NSEvent) {
-        // ⌘Return commits.
+        if event.modifierFlags.contains(.command),
+           let key = event.charactersIgnoringModifiers?.lowercased() {
+            switch key {
+            case "\r": onCommit?(); return
+            case "b": onToggleBold?(); return
+            case "i": onToggleItalic?(); return
+            default: break
+            }
+        }
         if event.keyCode == 36, event.modifierFlags.contains(.command) {
             onCommit?()
             return
@@ -1430,11 +1497,11 @@ final class InkwellTextView: NSTextView {
         return result
     }
 
-    private func growToFit() {
+    func growToFit() {
         guard let container = textContainer, let manager = layoutManager else { return }
         manager.ensureLayout(for: container)
         let used = manager.usedRect(for: container)
-        let needed = ceil(used.height) + 10
+        let needed = ceil(used.height) + textContainerInset.height * 2 + 2
         if needed > frame.height {
             var f = frame
             let delta = needed - f.height

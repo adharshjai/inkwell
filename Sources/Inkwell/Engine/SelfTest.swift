@@ -24,6 +24,7 @@ enum SelfTest {
         testCompactSave()
         testSaveStaysCompact()
         testBackupRotation()
+        testTextBoxes()
         testCrispVisibilityPolicy()
         testPaperTemplates()
         testStamps()
@@ -112,18 +113,8 @@ enum SelfTest {
                             path.stroke()
                         }
                         ctx.restoreGState()
-                    } else if a.type == "FreeText", let text = a.contents {
-                        let font = a.font ?? NSFont.systemFont(ofSize: 13)
-                        let color = a.fontColor ?? .black
-                        ctx.saveGState()
-                        ctx.translateBy(x: b.minX, y: b.maxY)
-                        ctx.scaleBy(x: 1, y: -1)
-                        NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: true)
-                        NSAttributedString(string: text, attributes: [.font: font, .foregroundColor: color])
-                            .draw(with: CGRect(x: 2, y: 2, width: max(b.width - 4, 4), height: max(b.height - 4, 4)),
-                                  options: [.usesLineFragmentOrigin, .usesFontLeading])
-                        NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: false)
-                        ctx.restoreGState()
+                    } else if a.type == "FreeText" {
+                        Annotations.drawFreeText(a, in: ctx)
                     }
                 }
                 NSGraphicsContext.current = prev
@@ -800,6 +791,59 @@ enum SelfTest {
         state.pruneBackups(for: base, keep: 5)
         let remaining = backups().filter { $0.hasPrefix(base + " ") }.count
         check(remaining == 5, "prune keeps exactly 5", "kept \(remaining)")
+    }
+
+    // MARK: Text boxes (PowerPoint model)
+
+    private static func testTextBoxes() {
+        print("Text boxes:")
+        guard let doc = PDFDocument(data: PaperTemplate.blank.pageData()),
+              let page = doc.page(at: 0) else {
+            check(false, "blank doc")
+            return
+        }
+        let long = "The quick brown fox jumps over the lazy dog again and again and again"
+        let narrow = Annotations.makeFreeText(long, near: CGPoint(x: 100, y: 600), on: page, fontSize: 12, color: .black, width: 120)
+        let wide = Annotations.makeFreeText(long, near: CGPoint(x: 100, y: 400), on: page, fontSize: 12, color: .black, width: 500)
+        check(abs(narrow.bounds.width - 120) < 0.01 && abs(wide.bounds.width - 500) < 0.01, "box width is what was asked for")
+        check(narrow.bounds.height > wide.bounds.height * 1.8, "text wraps to the box width (narrow box is taller)")
+
+        // Resize semantics: width-only for a single box — font stays, height auto-fits.
+        page.addAnnotation(wide)
+        let before = Annotations.Geometry(of: wide)
+        let squeezed = CGRect(x: wide.bounds.minX, y: wide.bounds.maxY - 10, width: 150, height: 10)
+        Annotations.applyScale(wide, from: before, to: squeezed, scaleTextFont: false)
+        check(abs((wide.font?.pointSize ?? 0) - 12) < 0.01, "single-box resize keeps the font size")
+        check(abs(wide.bounds.width - 150) < 0.01, "single-box resize sets the wrap width")
+        check(wide.bounds.height > 10 && abs(wide.bounds.maxY - squeezed.maxY) < 0.01,
+              "box auto-fits its height downward to hold the text")
+        // Group semantics scale the font.
+        Annotations.restore(wide, to: before)
+        let doubled = CGRect(x: wide.bounds.minX, y: wide.bounds.minY, width: wide.bounds.width * 2, height: wide.bounds.height * 2)
+        Annotations.applyScale(wide, from: before, to: doubled, scaleTextFont: true)
+        check(abs((wide.font?.pointSize ?? 0) - 24) < 0.5, "group resize scales the font")
+
+        // Style: bold/italic/alignment round-trip through the geometry snapshot.
+        Annotations.restore(wide, to: before)
+        let snap = Annotations.Geometry(of: wide)
+        Annotations.styleText(wide, size: 16, bold: true, italic: true, alignment: .center)
+        check(Annotations.textIsBold(wide) && Annotations.textIsItalic(wide), "bold + italic apply")
+        check(wide.alignment == .center && abs((wide.font?.pointSize ?? 0) - 16) < 0.01, "alignment + size apply")
+        Annotations.restore(wide, to: snap)
+        check(!Annotations.textIsBold(wide) && wide.alignment == .left, "restore undoes style")
+
+        // Renders through the shared renderer.
+        wide.contents = "hello"
+        Annotations.refitFreeText(wide)
+        if let render = renderGray(page) {
+            var darkest = 255
+            for x in stride(from: Int(wide.bounds.minX), to: Int(wide.bounds.minX) + 60, by: 2) {
+                for y in stride(from: Int(wide.bounds.minY), to: Int(wide.bounds.maxY), by: 2) {
+                    darkest = min(darkest, sample(render, x: x, y: y))
+                }
+            }
+            check(darkest < 128, "text box renders its text")
+        }
     }
 
     // MARK: Crisp-rendering visibility policy

@@ -95,14 +95,18 @@ enum Annotations {
     struct Geometry {
         let bounds: CGRect
         let paths: [NSBezierPath]?   // deep copies, bounds-relative (ink)
-        let fontSize: CGFloat?       // free text
+        let font: NSFont?            // free text (size + bold/italic traits)
+        let alignment: NSTextAlignment
         let lineWidth: CGFloat?      // ink stroke width
+
+        var fontSize: CGFloat? { font?.pointSize }
 
         @MainActor
         init(of annotation: PDFAnnotation) {
             bounds = annotation.bounds
             paths = annotation.paths.map { $0.map { $0.copy() as! NSBezierPath } }
-            fontSize = annotation.font?.pointSize
+            font = annotation.font
+            alignment = annotation.alignment
             lineWidth = annotation.border?.lineWidth
         }
     }
@@ -118,7 +122,7 @@ enum Annotations {
 
     /// Rescales an annotation from its captured original geometry into
     /// `newBounds` — idempotent, so live handle-drags never accumulate error.
-    static func applyScale(_ annotation: PDFAnnotation, from original: Geometry, to newBounds: CGRect) {
+    static func applyScale(_ annotation: PDFAnnotation, from original: Geometry, to newBounds: CGRect, scaleTextFont: Bool = true) {
         let sx = newBounds.width / max(original.bounds.width, 0.01)
         let sy = newBounds.height / max(original.bounds.height, 0.01)
 
@@ -140,12 +144,24 @@ enum Annotations {
                 annotation.border = border
             }
         }
-        if annotation.type == "FreeText", let size = original.fontSize {
-            // Height drives text size: widening a box must not shrink the
-            // text (min(sx, sy) crushed fonts to invisibility on wide-flat
-            // resizes), and there's a readable floor.
-            let scaled = max(6, size * sy)
-            annotation.font = NSFont.systemFont(ofSize: scaled)
+        if annotation.type == "FreeText" {
+            // PowerPoint semantics: resizing a text box changes its WRAP
+            // WIDTH; the font stays put (a group resize scales it, so a
+            // labeled diagram shrinks as one). The box never gets shorter
+            // than its text — it auto-fits downward.
+            let baseFont = original.font ?? textBaseFont(size: 13)
+            let font = scaleTextFont
+                ? NSFontManager.shared.convert(baseFont, toSize: max(6, baseFont.pointSize * sy))
+                : baseFont
+            annotation.font = font
+            var box = newBounds
+            let needed = fittedTextHeight(annotation.contents ?? "", font: font, width: box.width)
+            if box.height < needed {
+                box.origin.y = box.maxY - needed
+                box.size.height = needed
+            }
+            annotation.bounds = box
+            return
         }
         annotation.bounds = newBounds
     }
@@ -164,21 +180,22 @@ enum Annotations {
                 annotation.border = border
             }
         }
-        if annotation.type == "FreeText", let size = geometry.fontSize {
-            annotation.font = NSFont.systemFont(ofSize: size)
+        if annotation.type == "FreeText" {
+            if let font = geometry.font { annotation.font = font }
+            annotation.alignment = geometry.alignment
         }
         annotation.bounds = geometry.bounds
     }
 
-    /// Registers undo for a resize that already happened.
-    static func registerResize(of annotation: PDFAnnotation, before: Geometry, state: AppState) {
+    /// Registers undo for a geometry/style change that already happened.
+    static func registerResize(of annotation: PDFAnnotation, before: Geometry, state: AppState, actionName: String = "Resize") {
         state.markDirty()
         state.bumpVersion()
-        state.undoManager?.setActionName("Resize")
+        state.undoManager?.setActionName(actionName)
         state.undoManager?.registerUndo(withTarget: state) { st in
             let current = Geometry(of: annotation)
             Annotations.restore(annotation, to: before)
-            Annotations.registerResize(of: annotation, before: current, state: st)
+            Annotations.registerResize(of: annotation, before: current, state: st, actionName: actionName)
             st.bumpVersion()
         }
     }
@@ -302,18 +319,7 @@ enum Annotations {
                     }
                     ctx.restoreGState()
                 case "FreeText":
-                    guard let text = a.contents else { break }
-                    let font = a.font ?? NSFont.systemFont(ofSize: 13)
-                    let color = a.fontColor ?? .black
-                    ctx.saveGState()
-                    ctx.translateBy(x: b.minX, y: b.maxY)
-                    ctx.scaleBy(x: 1, y: -1)
-                    NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: true)
-                    NSAttributedString(string: text, attributes: [.font: font, .foregroundColor: color])
-                        .draw(with: CGRect(x: 2, y: 2, width: max(b.width - 4, 4), height: max(b.height - 4, 4)),
-                              options: [.usesLineFragmentOrigin, .usesFontLeading])
-                    NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: false)
-                    ctx.restoreGState()
+                    drawFreeText(a, in: ctx)
                 case "Square", "Circle":
                     let width = a.border?.lineWidth ?? 1.5
                     let rect = b.insetBy(dx: width, dy: width)
@@ -521,23 +527,37 @@ enum Annotations {
 
     // MARK: - Text
 
-    static func makeFreeText(_ text: String, near point: CGPoint, on page: PDFPage, fontSize: CGFloat, color: NSColor) -> PDFAnnotation {
-        let font = NSFont.systemFont(ofSize: fontSize)
-        let size = TextMeasure.size(of: text, font: font, maxWidth: 420)
-        var bounds = CGRect(
-            x: point.x,
-            y: point.y - size.height,
-            width: max(size.width, 24),
-            height: size.height
-        )
-        // Keep on the page.
+    /// Text boxes follow the PowerPoint model: the box has a width the user
+    /// controls (drawn or resized), text wraps to it, the box grows in height
+    /// to fit, and font size/style are independent of box size.
+    static let textInset: CGFloat = 3
+
+    /// Helvetica is a PDF standard font: PDFKit round-trips its bold/italic
+    /// faces by name (the system font's variants come back as plain
+    /// Helvetica with traits lost), and every viewer renders it identically.
+    static func textBaseFont(size: CGFloat) -> NSFont {
+        NSFont(name: "Helvetica", size: size) ?? NSFont.systemFont(ofSize: size)
+    }
+
+    static func makeFreeText(
+        _ text: String, near point: CGPoint, on page: PDFPage,
+        fontSize: CGFloat, color: NSColor, width: CGFloat = 260,
+        bold: Bool = false, italic: Bool = false, alignment: NSTextAlignment = .left
+    ) -> PDFAnnotation {
+        var font = textBaseFont(size: fontSize)
+        if bold { font = NSFontManager.shared.convert(font, toHaveTrait: .boldFontMask) }
+        if italic { font = NSFontManager.shared.convert(font, toHaveTrait: .italicFontMask) }
+        let boxWidth = max(width, 40)
+        let height = fittedTextHeight(text, font: font, width: boxWidth)
+        var bounds = CGRect(x: point.x, y: point.y - height, width: boxWidth, height: height)
         let pageBounds = page.bounds(for: .cropBox)
-        if bounds.maxX > pageBounds.maxX { bounds.origin.x = pageBounds.maxX - bounds.width }
+        if bounds.maxX > pageBounds.maxX { bounds.origin.x = max(pageBounds.minX, pageBounds.maxX - bounds.width) }
         if bounds.minY < pageBounds.minY { bounds.origin.y = pageBounds.minY }
         let annotation = PDFAnnotation(bounds: bounds, forType: .freeText, withProperties: nil)
         annotation.contents = text
         annotation.font = font
         annotation.fontColor = color
+        annotation.alignment = alignment
         // NOT NSColor.clear — that's black at alpha 0, and PDFKit's appearance
         // generation can drop the alpha, rendering a solid black box.
         annotation.color = NSColor.white.withAlphaComponent(0.001)
@@ -546,23 +566,80 @@ enum Annotations {
         return annotation
     }
 
-    /// Recomputes a free-text annotation's bounds after its contents changed,
-    /// keeping the top-left corner fixed and staying on the page.
+    /// Height a box needs to show `text` wrapped at `width` (at least one line).
+    static func fittedTextHeight(_ text: String, font: NSFont, width: CGFloat) -> CGFloat {
+        let measured = TextMeasure.size(of: text, font: font, maxWidth: max(width - textInset * 2, 8))
+        let oneLine = ceil(font.ascender - font.descender + font.leading) + 4
+        return max(measured.height, oneLine) + textInset * 2
+    }
+
+    /// Re-fits a text box's HEIGHT to its contents at its current width,
+    /// keeping the top edge fixed and staying on the page.
     static func refitFreeText(_ annotation: PDFAnnotation) {
-        let font = annotation.font ?? NSFont.systemFont(ofSize: 13)
-        let size = TextMeasure.size(of: annotation.contents ?? "", font: font, maxWidth: 420)
+        let font = annotation.font ?? textBaseFont(size: 13)
         let old = annotation.bounds
-        var bounds = CGRect(
-            x: old.minX,
-            y: old.maxY - size.height,
-            width: max(size.width, 24),
-            height: size.height
-        )
-        if let pageBounds = annotation.page?.bounds(for: .cropBox) {
-            if bounds.maxX > pageBounds.maxX { bounds.origin.x = pageBounds.maxX - bounds.width }
-            if bounds.minY < pageBounds.minY { bounds.origin.y = pageBounds.minY }
+        let height = fittedTextHeight(annotation.contents ?? "", font: font, width: old.width)
+        var bounds = CGRect(x: old.minX, y: old.maxY - height, width: old.width, height: height)
+        if let pageBounds = annotation.page?.bounds(for: .cropBox), bounds.minY < pageBounds.minY {
+            bounds.origin.y = pageBounds.minY
         }
         annotation.bounds = bounds
+    }
+
+    static func textIsBold(_ annotation: PDFAnnotation) -> Bool {
+        guard let font = annotation.font else { return false }
+        return NSFontManager.shared.traits(of: font).contains(.boldFontMask)
+    }
+
+    static func textIsItalic(_ annotation: PDFAnnotation) -> Bool {
+        guard let font = annotation.font else { return false }
+        return NSFontManager.shared.traits(of: font).contains(.italicFontMask)
+    }
+
+    /// Applies font size / bold / italic / alignment (nil = leave as is),
+    /// then re-fits the box height. Caller registers undo.
+    static func styleText(_ annotation: PDFAnnotation, size: CGFloat? = nil, bold: Bool? = nil, italic: Bool? = nil, alignment: NSTextAlignment? = nil) {
+        var font = annotation.font ?? textBaseFont(size: 13)
+        let manager = NSFontManager.shared
+        if let size { font = manager.convert(font, toSize: max(4, size)) }
+        if let bold { font = manager.convert(font, toHaveTrait: bold ? .boldFontMask : .unboldFontMask) }
+        if let italic { font = manager.convert(font, toHaveTrait: italic ? .italicFontMask : .unitalicFontMask) }
+        annotation.font = font
+        if let alignment { annotation.alignment = alignment }
+        refitFreeText(annotation)
+    }
+
+    static func textAttributes(for annotation: PDFAnnotation) -> [NSAttributedString.Key: Any] {
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.alignment = annotation.alignment
+        paragraph.lineBreakMode = .byWordWrapping
+        return [
+            .font: annotation.font ?? textBaseFont(size: 13),
+            .foregroundColor: annotation.fontColor ?? NSColor.black,
+            .paragraphStyle: paragraph,
+        ]
+    }
+
+    /// Shared renderer for text boxes (crisp overlay, pasteboard, diagnostics):
+    /// wraps to the box width inside the standard inset, top-aligned.
+    static func drawFreeText(_ annotation: PDFAnnotation, in ctx: CGContext) {
+        guard let text = annotation.contents, !text.isEmpty else { return }
+        let b = annotation.bounds
+        ctx.saveGState()
+        ctx.translateBy(x: b.minX, y: b.maxY)
+        ctx.scaleBy(x: 1, y: -1)
+        let previous = NSGraphicsContext.current
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: true)
+        NSAttributedString(string: text, attributes: textAttributes(for: annotation)).draw(
+            with: CGRect(
+                x: textInset, y: textInset,
+                width: max(b.width - textInset * 2, 8),
+                height: max(b.height - textInset * 2, 8)
+            ),
+            options: [.usesLineFragmentOrigin, .usesFontLeading]
+        )
+        NSGraphicsContext.current = previous
+        ctx.restoreGState()
     }
 
     // MARK: - Stamps, signatures & typeset math

@@ -190,14 +190,36 @@ struct StylePopover: View {
             Divider()
 
             HStack {
-                Text("Text size")
+                Text("Text")
                     .font(.headline)
                 Spacer()
-                Stepper(value: fontSizeBinding, in: 8...36, step: 1) {
+                Stepper(value: fontSizeBinding, in: 6...72, step: 1) {
                     Text("\(Int(appState.fontSize)) pt")
                         .font(.body.monospacedDigit())
                 }
             }
+            HStack(spacing: 8) {
+                Toggle(isOn: boldBinding) { Image(systemName: "bold") }
+                    .toggleStyle(.button)
+                    .help("Bold (⌘B while typing)")
+                Toggle(isOn: italicBinding) { Image(systemName: "italic") }
+                    .toggleStyle(.button)
+                    .help("Italic (⌘I while typing)")
+                Spacer()
+                Picker("Alignment", selection: alignmentBinding) {
+                    Image(systemName: "text.alignleft").tag(NSTextAlignment.left)
+                    Image(systemName: "text.aligncenter").tag(NSTextAlignment.center)
+                    Image(systemName: "text.alignright").tag(NSTextAlignment.right)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(width: 120)
+            }
+            Text(appState.styleTargetTextBoxes.isEmpty
+                 ? "Applies to new text boxes. Select a box (or edit one) to restyle it."
+                 : "Restyling \(appState.styleTargetTextBoxes.count) text box\(appState.styleTargetTextBoxes.count == 1 ? "" : "es").")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
 
             Divider()
 
@@ -246,7 +268,28 @@ struct StylePopover: View {
     }
 
     private var fontSizeBinding: Binding<CGFloat> {
-        Binding(get: { appState.fontSize }, set: { appState.fontSize = $0 })
+        Binding(get: { appState.fontSize }, set: { appState.applyTextStyle(size: $0) })
+    }
+
+    private var boldBinding: Binding<Bool> {
+        Binding(
+            get: { appState.styleTargetTextBoxes.first.map(Annotations.textIsBold) ?? appState.textBold },
+            set: { appState.applyTextStyle(bold: $0) }
+        )
+    }
+
+    private var italicBinding: Binding<Bool> {
+        Binding(
+            get: { appState.styleTargetTextBoxes.first.map(Annotations.textIsItalic) ?? appState.textItalic },
+            set: { appState.applyTextStyle(italic: $0) }
+        )
+    }
+
+    private var alignmentBinding: Binding<NSTextAlignment> {
+        Binding(
+            get: { appState.styleTargetTextBoxes.first?.alignment ?? appState.textAlignment },
+            set: { appState.applyTextStyle(alignment: $0) }
+        )
     }
 
     private func swatchButton(_ color: NSColor, name: String, isSelected: Bool, action: @escaping () -> Void) -> some View {
