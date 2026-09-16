@@ -1251,9 +1251,12 @@ final class ToolPDFView: PDFView {
               let page = editingPage,
               let appState else { return }
         let text = editor.string.trimmingCharacters(in: .whitespacesAndNewlines)
+        let isNew = editingIsNew
+        let oldContents = editingOldContents
+        let oldBounds = editingOldBounds
         tearDownEditor()
 
-        if editingIsNew {
+        if isNew {
             guard !text.isEmpty else { return }
             if page.rotation % 360 != 0 {
                 // FreeText has no rotation of its own and would display sideways;
@@ -1277,35 +1280,35 @@ final class ToolPDFView: PDFView {
             appState.selectedAnnotationPage = page
             refreshSelectionOverlay()
         } else {
-            if let page = editingPage ?? appState.selectedAnnotationPage {
-                appState.applyDisplayPolicy(annotation, on: page)
-            } else {
-                annotation.shouldDisplay = true
-            }
+            appState.applyDisplayPolicy(annotation, on: page)
             if text.isEmpty {
                 Annotations.remove(annotation, from: page, state: appState, actionName: "Delete Text")
-            } else if text != editingOldContents {
+            } else if text != oldContents {
                 annotation.contents = text
                 Annotations.refitFreeText(annotation)
                 Annotations.registerTextEdit(
-                    of: annotation, oldContents: editingOldContents,
-                    oldBounds: editingOldBounds, state: appState
+                    of: annotation, oldContents: oldContents,
+                    oldBounds: oldBounds, state: appState
                 )
-                appState.bumpVersion()
             }
+            appState.bumpVersion()
+            refreshSelectionOverlay()
             setNeedsDisplay(bounds)
         }
     }
 
     private func cancelTextEditing(from editor: InkwellTextView?) {
         guard let editor, editor === textEditor, let annotation = editingAnnotation else { return }
+        let wasNew = editingIsNew
+        let page = editingPage
         tearDownEditor()
-        if !editingIsNew {
-            if let appState, let page = editingPage {
+        if !wasNew {
+            if let appState, let page {
                 appState.applyDisplayPolicy(annotation, on: page)
             } else {
                 annotation.shouldDisplay = true
             }
+            refreshSelectionOverlay()
             setNeedsDisplay(bounds)
         }
     }
@@ -1313,6 +1316,9 @@ final class ToolPDFView: PDFView {
     private func tearDownEditor() {
         textEditor?.removeFromSuperview()
         textEditor = nil
+        editingAnnotation = nil
+        editingPage = nil
+        editingIsNew = false
         window?.makeFirstResponder(self)
     }
 
@@ -1433,7 +1439,7 @@ final class ToolPDFView: PDFView {
             for annotation in page.annotations
             where annotation.userName == Annotations.authorName
                 && !annotation.shouldDisplay
-                && annotation !== editingAnnotation {
+                && annotation !== editingTextAnnotation {
                 let b = annotation.bounds
                 if annotation.type == "Ink", let paths = annotation.paths {
                     ctx.saveGState()
