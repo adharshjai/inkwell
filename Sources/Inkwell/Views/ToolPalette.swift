@@ -193,10 +193,21 @@ struct StylePopover: View {
                 Text("Text")
                     .font(.headline)
                 Spacer()
-                Stepper(value: fontSizeBinding, in: 6...72, step: 1) {
-                    Text("\(Int(appState.fontSize)) pt")
-                        .font(.body.monospacedDigit())
+                Button {
+                    appState.stepTextSize(-1)
+                } label: {
+                    Image(systemName: "textformat.size.smaller")
                 }
+                .help("Smaller text (⌘[)")
+                Text("\(AppState.formatSize(currentSize)) pt")
+                    .font(.body.monospacedDigit())
+                    .frame(minWidth: 50)
+                Button {
+                    appState.stepTextSize(1)
+                } label: {
+                    Image(systemName: "textformat.size.larger")
+                }
+                .help("Bigger text (⌘])")
             }
             HStack(spacing: 8) {
                 Toggle(isOn: boldBinding) { Image(systemName: "bold") }
@@ -265,6 +276,12 @@ struct StylePopover: View {
 
     private var highlightWidthBinding: Binding<CGFloat> {
         Binding(get: { appState.highlightWidth }, set: { appState.highlightWidth = $0 })
+    }
+
+    private var currentSize: CGFloat {
+        _ = appState.textStyleTick
+        _ = appState.docVersion
+        return appState.currentTextSize ?? appState.fontSize
     }
 
     private var fontSizeBinding: Binding<CGFloat> {

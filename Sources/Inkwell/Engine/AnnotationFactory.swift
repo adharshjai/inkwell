@@ -20,7 +20,7 @@ enum Annotations {
         page.addAnnotation(annotation)
         state.applyDisplayPolicy(annotation, on: page)
         state.markDirty()
-        state.bumpVersion()
+        state.bumpVersion(page: page)
         state.undoManager?.setActionName(actionName)
         state.undoManager?.registerUndo(withTarget: state) { st in
             Annotations.remove(annotation, from: page, state: st, actionName: actionName)
@@ -34,7 +34,7 @@ enum Annotations {
             if state.selectedAnnotations.isEmpty { state.selectedAnnotationPage = nil }
         }
         state.markDirty()
-        state.bumpVersion()
+        state.bumpVersion(page: page)
         state.undoManager?.setActionName(actionName)
         state.undoManager?.registerUndo(withTarget: state) { st in
             Annotations.add(annotation, to: page, state: st, actionName: actionName)
@@ -45,7 +45,7 @@ enum Annotations {
     static func registerMove(of annotation: PDFAnnotation, totalDelta: CGPoint, state: AppState) {
         guard totalDelta != .zero else { return }
         state.markDirty()
-        state.bumpVersion()
+        state.bumpVersion(page: annotation.page)
         state.undoManager?.setActionName("Move")
         state.undoManager?.registerUndo(withTarget: state) { st in
             Annotations.translate(annotation, by: CGPoint(x: -totalDelta.x, y: -totalDelta.y))
@@ -55,7 +55,7 @@ enum Annotations {
 
     static func registerTextEdit(of annotation: PDFAnnotation, oldContents: String, oldBounds: CGRect, state: AppState) {
         state.markDirty()
-        state.bumpVersion()
+        state.bumpVersion(page: annotation.page)
         state.undoManager?.setActionName("Edit Text")
         state.undoManager?.registerUndo(withTarget: state) { st in
             let current = annotation.contents ?? ""
@@ -78,7 +78,7 @@ enum Annotations {
     static func registerGroupMove(of annotations: [PDFAnnotation], totalDelta: CGPoint, state: AppState) {
         guard totalDelta != .zero, !annotations.isEmpty else { return }
         state.markDirty()
-        state.bumpVersion()
+        state.bumpVersion(page: annotations.first?.page)
         state.undoManager?.setActionName("Move")
         state.undoManager?.registerUndo(withTarget: state) { st in
             let inverse = CGPoint(x: -totalDelta.x, y: -totalDelta.y)
@@ -190,13 +190,14 @@ enum Annotations {
     /// Registers undo for a geometry/style change that already happened.
     static func registerResize(of annotation: PDFAnnotation, before: Geometry, state: AppState, actionName: String = "Resize") {
         state.markDirty()
-        state.bumpVersion()
+        state.bumpVersion(page: annotation.page)
         state.undoManager?.setActionName(actionName)
         state.undoManager?.registerUndo(withTarget: state) { st in
             let current = Geometry(of: annotation)
             Annotations.restore(annotation, to: before)
             Annotations.registerResize(of: annotation, before: current, state: st, actionName: actionName)
-            st.bumpVersion()
+            st.bumpVersion(page: annotation.page)
+            st.textStyleTick += 1
         }
     }
 

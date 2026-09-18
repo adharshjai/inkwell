@@ -26,6 +26,10 @@ enum Boot {
             }
             return
         }
+        if let flagIndex = args.firstIndex(of: "--bench"), args.indices.contains(flagIndex + 1) {
+            MainActor.assumeIsolated { SelfTest.bench(url: URL(fileURLWithPath: args[flagIndex + 1])) }
+            return
+        }
         if let flagIndex = args.firstIndex(of: "--table-demo"), args.indices.contains(flagIndex + 1) {
             MainActor.assumeIsolated { SelfTest.tableDemo(to: URL(fileURLWithPath: args[flagIndex + 1])) }
             return
@@ -178,6 +182,13 @@ struct AppCommands: Commands {
             Divider()
             Button("Insert Table…") { appState.openTableSheet() }
                 .keyboardShortcut("t", modifiers: [.command, .shift])
+                .disabled(!appState.hasDocument)
+            Divider()
+            Button("Bigger Text") { appState.stepTextSize(1) }
+                .keyboardShortcut("]", modifiers: .command)
+                .disabled(!appState.hasDocument)
+            Button("Smaller Text") { appState.stepTextSize(-1) }
+                .keyboardShortcut("[", modifiers: .command)
                 .disabled(!appState.hasDocument)
         }
 

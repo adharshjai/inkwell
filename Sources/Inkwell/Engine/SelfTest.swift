@@ -26,6 +26,8 @@ enum SelfTest {
         testBackupRotation()
         testTextBoxes()
         testTables()
+        testTextSizeAndRevisions()
+        testOverlayRenderer()
         testImagePages()
         testCrispVisibilityPolicy()
         testPaperTemplates()
@@ -875,6 +877,72 @@ enum SelfTest {
         }
     }
 
+    /// `Inkwell --bench <pdf>` — times the per-frame costs of dragging.
+    static func bench(url: URL) {
+        guard let doc = PDFDocument(url: url), let page = doc.page(at: 0),
+              let rows = TableLayout.parse(sampleTable),
+              let table = Annotations.makeTable(TableSpec(rows: rows), fontSize: 11, topLeft: CGPoint(x: 80, y: 400), color: .black)
+        else { print("bench setup failed"); return }
+        let state = AppState()
+        state.hidesOwnAnnotations = true
+        state.document = doc
+        page.addAnnotation(table)
+        state.hideOwnAnnotationsFromPDFView()
+        func ms(_ n: Int = 1, _ body: () -> Void) -> Double {
+            let t = Date()
+            for _ in 0..<n { body() }
+            return Date().timeIntervalSince(t) * 1000 / Double(n)
+        }
+        var segments = 0
+        for path in table.paths ?? [] { segments += path.elementCount }
+        let inkCount = (0..<doc.pageCount).reduce(0) { $0 + (doc.page(at: $1)?.annotations.filter { $0.type == "Ink" }.count ?? 0) }
+        print("table path elements: \(segments); ink annotations in doc: \(inkCount); on page 1: \(page.annotations.count)")
+
+        // 1. PDFKit cost of moving the (hidden) table's bounds.
+        print(String(format: "move table bounds (PDFKit):        %.2f ms/frame", ms(60) {
+            Annotations.translate(table, by: CGPoint(x: 0.5, y: 0))
+        }))
+
+        // 2. Overlay: stroke every Inkwell annotation on page 1 (current renderer).
+        let scale: CGFloat = 1.5
+        let box = page.bounds(for: .cropBox)
+        guard let ctx = CGContext(data: nil, width: Int(box.width * scale * 2), height: Int(box.height * scale * 2),
+                                  bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return }
+        ctx.scaleBy(x: scale * 2, y: scale * 2)
+        let prev = NSGraphicsContext.current
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: false)
+        func strokeAll(_ filter: (PDFAnnotation) -> Bool) {
+            for a in page.annotations where a.userName == Annotations.authorName && a.type == "Ink" && filter(a) {
+                ctx.saveGState()
+                ctx.translateBy(x: a.bounds.minX, y: a.bounds.minY)
+                a.color.setStroke()
+                let w = a.border?.lineWidth ?? 1.5
+                for path in a.paths ?? [] {
+                    path.lineWidth = w
+                    path.lineCapStyle = .round
+                    path.lineJoinStyle = .round
+                    path.stroke()
+                }
+                ctx.restoreGState()
+            }
+        }
+        print(String(format: "overlay: stroke all page-1 ink:    %.2f ms/frame", ms(10) { strokeAll { _ in true } }))
+        print(String(format: "overlay: stroke just the table:    %.2f ms/frame", ms(10) { strokeAll { $0 === table } }))
+        NSGraphicsContext.current = prev
+
+        // 3. Thumbnail refresh as done on every edit (all rows, doc-wide toggle).
+        print(String(format: "thumbnail refresh, all pages:      %.2f ms/edit", ms(3) {
+            for i in 0..<doc.pageCount {
+                guard let p = doc.page(at: i) else { continue }
+                _ = state.withOwnAnnotationsVisible { p.thumbnail(of: CGSize(width: 150, height: 194), for: .cropBox) }
+            }
+        }))
+        print(String(format: "thumbnail refresh, NEW (1 page):    %.2f ms/edit", ms(3) {
+            _ = state.withOwnAnnotationsVisible(on: page) { page.thumbnail(of: CGSize(width: 150, height: 194), for: .cropBox) }
+        }))
+    }
+
     /// `Inkwell --table-demo out.png` — the sample table in all three styles.
     static func tableDemo(to url: URL) {
         guard let rows = TableLayout.parse(sampleTable),
@@ -903,6 +971,125 @@ enum SelfTest {
             try? png.write(to: url)
             print("Table demo written to \(url.path)")
         }
+    }
+
+    // MARK: Text size & per-page revisions
+
+    private static func testTextSizeAndRevisions() {
+        print("Text size & revisions:")
+        check(AppState.steppedSize(from: 13, direction: 1) == 14, "13 → 14 bigger")
+        check(AppState.steppedSize(from: 13, direction: -1) == 12, "13 → 12 smaller")
+        check(AppState.steppedSize(from: 6.5, direction: 1) == 7, "fractional sizes join the ladder going up")
+        check(AppState.steppedSize(from: 6.5, direction: -1) == 6, "…and going down")
+        check(AppState.steppedSize(from: 96, direction: 1) > 96, "past the top keeps growing")
+        check(AppState.formatSize(12) == "12" && AppState.formatSize(6.5) == "6.5", "size labels")
+
+        let state = AppState()
+        guard let doc = PDFDocument(data: PaperTemplate.blank.pageData()),
+              let page = doc.page(at: 0) else {
+            check(false, "blank doc")
+            return
+        }
+        state.document = doc
+        let box = Annotations.makeFreeText("Prediction", near: CGPoint(x: 100, y: 500), on: page, fontSize: 13, color: .black)
+        let structureBefore = state.structureVersion
+        Annotations.add(box, to: page, state: state, actionName: "Add Text")
+        settle()
+        check(state.pageRevisions[ObjectIdentifier(page)] == 1, "adding an annotation bumps only its page")
+        check(state.structureVersion == structureBefore, "…not the whole document")
+
+        state.selectedAnnotations = [box]
+        state.selectedAnnotationPage = page
+        let heightBefore = box.bounds.height
+        state.stepTextSize(1)
+        settle()
+        check(abs((box.font?.pointSize ?? 0) - 14) < 0.01, "bigger text on the selected box")
+        check(box.bounds.height > heightBefore, "box grows to fit bigger text")
+        state.stepTextSize(-1)
+        state.stepTextSize(-1)
+        settle()
+        check(abs((box.font?.pointSize ?? 0) - 12) < 0.01, "smaller text on the selected box")
+        state.setTextSize(24)
+        settle()
+        check(abs((box.font?.pointSize ?? 0) - 24) < 0.01, "exact size from the size menu")
+        state.performUndo()
+        settle()
+        check(abs((box.font?.pointSize ?? 0) - 12) < 0.01, "size changes undo")
+
+        state.selectedAnnotations = []
+        let defaultBefore = state.fontSize
+        state.stepTextSize(1)
+        check(state.fontSize > defaultBefore, "with nothing selected, the default for new boxes changes")
+    }
+
+    // MARK: Overlay renderer (dense ink cache)
+
+    private static func testOverlayRenderer() {
+        print("Overlay renderer:")
+        _ = NSApplication.shared
+        guard let rows = TableLayout.parse(sampleTable),
+              let doc = PDFDocument(data: PaperTemplate.blank.pageData()),
+              let page = doc.page(at: 0),
+              let table = Annotations.makeTable(TableSpec(rows: rows), fontSize: 12, topLeft: CGPoint(x: 100, y: 600), color: .black)
+        else {
+            check(false, "renderer setup")
+            return
+        }
+        let state = AppState()
+        state.hidesOwnAnnotations = true
+        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 700, height: 900),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        let view = ToolPDFView(frame: CGRect(x: 0, y: 0, width: 700, height: 900))
+        view.appState = state
+        state.pdfView = view
+        window.contentView = view
+        view.document = doc
+        state.document = doc
+        view.autoScales = true
+        view.layoutDocumentView()
+        Annotations.add(table, to: page, state: state, actionName: "Insert Table")
+        check(!table.shouldDisplay, "table is overlay-drawn")
+
+        let scale: CGFloat = 2
+        func render() -> CGContext? {
+            let size = view.bounds.size
+            guard let ctx = CGContext(data: nil, width: Int(size.width * scale), height: Int(size.height * scale),
+                                      bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+            ctx.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+            ctx.fill(CGRect(x: 0, y: 0, width: size.width * scale, height: size.height * scale))
+            ctx.scaleBy(x: scale, y: scale)
+            let previous = NSGraphicsContext.current
+            NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: false)
+            view.drawCrispAnnotations(in: ctx, dirtyRect: view.bounds)
+            NSGraphicsContext.current = previous
+            return ctx
+        }
+        func darkPixels(_ ctx: CGContext, in rect: CGRect) -> Int {
+            guard let data = ctx.data else { return 0 }
+            let bytes = data.bindMemory(to: UInt8.self, capacity: ctx.height * ctx.bytesPerRow)
+            var count = 0
+            let r = rect.applying(CGAffineTransform(scaleX: scale, y: scale)).integral
+            for y in stride(from: max(Int(r.minY), 0), to: min(Int(r.maxY), ctx.height), by: 2) {
+                let row = ctx.height - 1 - y
+                for x in stride(from: max(Int(r.minX), 0), to: min(Int(r.maxX), ctx.width), by: 2) {
+                    if bytes[row * ctx.bytesPerRow + x * 4] < 100 { count += 1 }
+                }
+            }
+            return count
+        }
+        let tableInView = view.convert(table.bounds, from: page)
+        guard let first = render(), let second = render() else {
+            check(false, "overlay renders")
+            return
+        }
+        let inside1 = darkPixels(first, in: tableInView)
+        let inside2 = darkPixels(second, in: tableInView)
+        let outside = darkPixels(second, in: tableInView.offsetBy(dx: 0, dy: -tableInView.height - 40))
+        check(inside1 > 200, "dense table draws where it is (\(inside1) dark samples)")
+        check(abs(inside1 - inside2) <= max(inside1 / 20, 8), "cached redraw matches the first render")
+        check(outside == 0, "nothing drawn outside the table")
+        window.orderOut(nil)
     }
 
     // MARK: Image pages

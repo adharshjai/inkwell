@@ -185,25 +185,88 @@ final class AppState {
     }
 
     func applyTextStyle(size: CGFloat? = nil, bold: Bool? = nil, italic: Bool? = nil, alignment: NSTextAlignment? = nil) {
-        if let size { fontSize = size }
         if let bold { textBold = bold }
         if let italic { textItalic = italic }
         if let alignment { textAlignment = alignment }
         let targets = styleTargetTextBoxes
-        guard !targets.isEmpty else { return }
-        undoManager?.beginUndoGrouping()
+        guard !targets.isEmpty else {
+            if let size { fontSize = size }
+            return
+        }
+        restyle(targets) { Annotations.styleText($0, size: size, bold: bold, italic: italic, alignment: alignment) }
+    }
+
+    // MARK: Text size (Word-style bigger / smaller)
+
+    static let textSizeLadder: [CGFloat] = [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 16, 18, 20, 22, 24, 28, 32, 36, 40, 48, 56, 64, 72, 96]
+
+    static func steppedSize(from size: CGFloat, direction: Int) -> CGFloat {
+        if direction > 0 {
+            return textSizeLadder.first { $0 > size + 0.01 } ?? min(size * 1.25, 240)
+        }
+        return textSizeLadder.last { $0 < size - 0.01 } ?? max(size * 0.8, 4)
+    }
+
+    static func formatSize(_ size: CGFloat) -> String {
+        abs(size - size.rounded()) < 0.05 ? "\(Int(size.rounded()))" : String(format: "%.1f", size)
+    }
+
+    /// Point size of the box the text controls act on (nil = none selected).
+    var currentTextSize: CGFloat? { styleTargetTextBoxes.first?.font?.pointSize }
+
+    /// ⌘] / ⌘[ — each targeted box steps along the size ladder from its own
+    /// size; with nothing targeted, the default for new boxes steps.
+    func stepTextSize(_ direction: Int) {
+        let targets = styleTargetTextBoxes
+        guard !targets.isEmpty else {
+            fontSize = Self.steppedSize(from: fontSize, direction: direction)
+            textStyleTick += 1
+            flash("New text boxes: \(Self.formatSize(fontSize)) pt", seconds: 1.2)
+            return
+        }
+        restyle(targets) { box in
+            let current = box.font?.pointSize ?? 13
+            Annotations.styleText(box, size: Self.steppedSize(from: current, direction: direction))
+        }
+    }
+
+    func setTextSize(_ size: CGFloat) {
+        let targets = styleTargetTextBoxes
+        guard !targets.isEmpty else {
+            fontSize = size
+            textStyleTick += 1
+            return
+        }
+        restyle(targets) { Annotations.styleText($0, size: size) }
+    }
+
+    /// Applies a style change to boxes as one undo step. A box still being
+    /// created isn't on a page yet — its creation is the undo step, so
+    /// styling it mid-edit registers nothing of its own.
+    private func restyle(_ targets: [PDFAnnotation], _ change: (PDFAnnotation) -> Void) {
+        let registering = targets.contains { $0.page != nil }
+        if registering { undoManager?.beginUndoGrouping() }
         for box in targets {
             let before = Annotations.Geometry(of: box)
-            Annotations.styleText(box, size: size, bold: bold, italic: italic, alignment: alignment)
-            Annotations.registerResize(of: box, before: before, state: self, actionName: "Format Text")
+            change(box)
+            if box.page != nil {
+                Annotations.registerResize(of: box, before: before, state: self, actionName: "Format Text")
+            }
         }
-        undoManager?.endUndoGrouping()
+        if registering { undoManager?.endUndoGrouping() }
+        textStyleTick += 1
         pdfView?.restyleTextEditor()
         pdfView?.refreshSelectionOverlay()
     }
 
     var pendingPlacement: PendingPlacement?
     var insertionGap: InsertionGap?
+    /// Bumped when text styling changes so formatting controls refresh.
+    var textStyleTick = 0
+    /// Per-page edit counters and a structural counter: thumbnails re-render
+    /// only the page that changed (and everything on page add/remove/reorder).
+    var pageRevisions: [ObjectIdentifier: Int] = [:]
+    var structureVersion = 0
     /// The Insert/Edit Table sheet, when open.
     var tableRequest: TableRequest?
     /// Pasteboard generation our own annotation copy wrote — anything newer
@@ -256,6 +319,22 @@ final class AppState {
                 annotation.shouldDisplay = true
                 hidden.append(annotation)
             }
+        }
+        defer {
+            for annotation in hidden { annotation.shouldDisplay = false }
+        }
+        return body()
+    }
+
+    /// Page-scoped version for thumbnails: toggling every annotation in the
+    /// document for each thumbnail made every edit cost ~180 ms.
+    func withOwnAnnotationsVisible<T>(on page: PDFPage, _ body: () -> T) -> T {
+        guard hidesOwnAnnotations else { return body() }
+        var hidden: [PDFAnnotation] = []
+        for annotation in page.annotations
+        where annotation.userName == Annotations.authorName && !annotation.shouldDisplay {
+            annotation.shouldDisplay = true
+            hidden.append(annotation)
         }
         defer {
             for annotation in hidden { annotation.shouldDisplay = false }
@@ -418,9 +497,14 @@ final class AppState {
         isDirty = true
     }
 
-    func bumpVersion() {
+    func bumpVersion(page: PDFPage? = nil) {
         docVersion += 1
         pageCount = document?.pageCount ?? 0
+        if let page {
+            pageRevisions[ObjectIdentifier(page), default: 0] += 1
+        } else {
+            structureVersion += 1
+        }
         // The crisp overlay repaints on interaction; mutations that arrive
         // through the keyboard (⌘Z!) must repaint it explicitly.
         pdfView?.refreshSelectionOverlay()

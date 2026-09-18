@@ -1,5 +1,6 @@
 import AppKit
 import PDFKit
+import SwiftUI
 
 /// PDFView subclass that turns mouse/keyboard input into annotations according
 /// to the active tool. Select mode passes through to PDFKit (text selection,
@@ -28,6 +29,32 @@ final class ToolPDFView: PDFView {
     private var resizeTargets: [(annotation: PDFAnnotation, original: Annotations.Geometry)] = []
     private var resizeUnionOriginal: CGRect = .zero
     private var resizeCorner: Int?
+
+    // Live manipulation: overlay-drawn annotations move/resize VISUALLY while
+    // dragging and commit once on release. Changing a real annotation's
+    // geometry every mouse event made PDFKit re-render the page beneath it
+    // 60+ times a second — dragging a table crawled and pinned the CPU.
+    private var livePreview: [ObjectIdentifier: CGAffineTransform] = [:]
+    private var resizeFinal: [ObjectIdentifier: CGRect] = [:]
+    private var manipulationDirty: CGRect?
+
+    // Rasterized dense ink (tables, typeset math) — re-stroking tens of
+    // thousands of hatch segments per repaint is wasted work.
+    private struct InkImage {
+        weak var annotation: PDFAnnotation?
+        let size: CGSize
+        let pixelScale: CGFloat
+        let lineWidth: CGFloat
+        let color: NSColor
+        let image: CGImage
+        var lastUse: Int
+    }
+    private var inkImages: [ObjectIdentifier: InkImage] = [:]
+    private var inkImageClock = 0
+    private var lastScaleChange: TimeInterval = 0
+    private static let denseInkElements = 1200
+
+    private var formatBar: NSHostingView<TextFormatBar>?
 
     // Inline text editing
     private var textEditor: InkwellTextView?
@@ -106,8 +133,8 @@ final class ToolPDFView: PDFView {
     private func commonInit() {
         selectionOverlay.autoresizingMask = [.width, .height]
         selectionOverlay.frame = bounds
-        selectionOverlay.crispContentDraw = { [weak self] ctx in
-            self?.drawCrispAnnotations(in: ctx)
+        selectionOverlay.crispContentDraw = { [weak self] ctx, dirty in
+            self?.drawCrispAnnotations(in: ctx, dirtyRect: dirty)
         }
         addSubview(selectionOverlay)
 
@@ -115,6 +142,7 @@ final class ToolPDFView: PDFView {
             forName: .PDFViewScaleChanged, object: self, queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated {
+                self?.lastScaleChange = Date.timeIntervalSinceReferenceDate
                 self?.repositionTextEditor()
                 self?.refreshSelectionOverlay()
                 self?.appState?.syncZoom()
@@ -148,6 +176,8 @@ final class ToolPDFView: PDFView {
                 self.annotationsChanged(on: page)
             }
             self.documentView?.needsDisplay = true
+            // Re-rasterize cached dense ink at the settled zoom.
+            self.selectionOverlay.needsDisplay = true
         }
         renderNudge = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.22, execute: work)
@@ -373,6 +403,8 @@ final class ToolPDFView: PDFView {
                     : boundsForResize(original: resizeUnionOriginal, corner: corner, to: point)
                 let sx = newUnion.width / max(resizeUnionOriginal.width, 0.01)
                 let sy = newUnion.height / max(resizeUnionOriginal.height, 0.01)
+                // ⇧ while resizing a single text box scales its text too.
+                let scaleFonts = resizeTargets.count > 1 || event.modifierFlags.contains(.shift)
                 for target in resizeTargets {
                     let o = target.original.bounds
                     let memberBounds = CGRect(
@@ -381,12 +413,17 @@ final class ToolPDFView: PDFView {
                         width: o.width * sx,
                         height: o.height * sy
                     )
-                    Annotations.applyScale(
-                        target.annotation, from: target.original, to: memberBounds,
-                        scaleTextFont: resizeTargets.count > 1
-                    )
+                    let a = target.annotation
+                    if a.type == "Ink", isOverlayDrawn(a), o.width > 0.01, o.height > 0.01 {
+                        livePreview[ObjectIdentifier(a)] = CGAffineTransform(translationX: memberBounds.minX, y: memberBounds.minY)
+                            .scaledBy(x: memberBounds.width / o.width, y: memberBounds.height / o.height)
+                            .translatedBy(x: -o.minX, y: -o.minY)
+                        resizeFinal[ObjectIdentifier(a)] = memberBounds
+                    } else {
+                        Annotations.applyScale(a, from: target.original, to: memberBounds, scaleTextFont: scaleFonts)
+                    }
                 }
-                refreshSelectionOverlay()
+                refreshDuringManipulation()
                 return
             }
             if let start = marqueeStartView {
@@ -400,12 +437,16 @@ final class ToolPDFView: PDFView {
             }
             let delta = point - dragLast
             guard abs(delta.x) + abs(delta.y) > 0.05 else { return }
-            for annotation in dragAnnotations {
-                Annotations.translate(annotation, by: delta)
-            }
             dragLast = point
             dragTotal = dragTotal + delta
-            refreshSelectionOverlay()
+            for annotation in dragAnnotations {
+                if isOverlayDrawn(annotation) {
+                    livePreview[ObjectIdentifier(annotation)] = CGAffineTransform(translationX: dragTotal.x, y: dragTotal.y)
+                } else {
+                    Annotations.translate(annotation, by: delta)
+                }
+            }
+            refreshDuringManipulation()
         case .pen, .highlighter:
             guard let page = strokePage,
                   let (eventPage, point) = pagePoint(for: event), eventPage === page else { return }
@@ -442,14 +483,24 @@ final class ToolPDFView: PDFView {
         switch appState.tool {
         case .select:
             if !resizeTargets.isEmpty {
+                let targets = resizeTargets
+                let scaleFonts = targets.count > 1 || event.modifierFlags.contains(.shift)
+                for target in targets {
+                    if let final = resizeFinal[ObjectIdentifier(target.annotation)] {
+                        Annotations.applyScale(target.annotation, from: target.original, to: final, scaleTextFont: scaleFonts)
+                    }
+                }
+                livePreview.removeAll()
+                resizeFinal.removeAll()
+                manipulationDirty = nil
+                resizeTargets = []
+                resizeCorner = nil
                 appState.undoManager?.beginUndoGrouping()
-                for target in resizeTargets {
+                for target in targets {
                     Annotations.registerResize(of: target.annotation, before: target.original, state: appState)
                 }
                 appState.undoManager?.endUndoGrouping()
                 Haptics.snap()
-                resizeTargets = []
-                resizeCorner = nil
                 refreshSelectionOverlay()
                 return
             }
@@ -458,9 +509,16 @@ final class ToolPDFView: PDFView {
                 return
             }
             if !dragAnnotations.isEmpty {
-                Annotations.registerGroupMove(of: dragAnnotations, totalDelta: dragTotal, state: appState)
+                for annotation in dragAnnotations where livePreview[ObjectIdentifier(annotation)] != nil {
+                    Annotations.translate(annotation, by: dragTotal)
+                }
+                livePreview.removeAll()
+                manipulationDirty = nil
+                let moved = dragAnnotations
                 dragAnnotations = []
                 dragPage = nil
+                Annotations.registerGroupMove(of: moved, totalDelta: dragTotal, state: appState)
+                refreshSelectionOverlay()
             } else {
                 super.mouseUp(with: event)
             }
@@ -523,7 +581,7 @@ final class ToolPDFView: PDFView {
             let zoom = max(scaleFactor, 0.05)
             // Font size tracks zoom so what you type reads the same size on
             // screen at any magnification.
-            let dynamicSize = min(max(appState.fontSize / zoom, 5), 96)
+            let dynamicSize = min(max(appState.fontSize / zoom, 5), 96).rounded()
             let drewBox = dragged.width * scaleFactor > 14
             let width = drewBox ? dragged.width : min(max(260 / zoom, 80), 900)
             let topLeft = drewBox ? CGPoint(x: dragged.minX, y: dragged.maxY) : start
@@ -663,6 +721,9 @@ final class ToolPDFView: PDFView {
         dragPage = nil
         resizeTargets = []
         resizeCorner = nil
+        livePreview.removeAll()
+        resizeFinal.removeAll()
+        manipulationDirty = nil
         marqueeStartView = nil
         marqueePage = nil
         pendingShiftToggle = nil
@@ -950,6 +1011,13 @@ final class ToolPDFView: PDFView {
     override func keyDown(with event: NSEvent) {
         guard let appState else { return super.keyDown(with: event) }
 
+        // ⇧⌘> / ⇧⌘< — Word's bigger/smaller text (⌘] / ⌘[ live in the menu).
+        if event.modifierFlags.contains(.command),
+           let chars = event.charactersIgnoringModifiers, chars == ">" || chars == "<" {
+            appState.stepTextSize(chars == ">" ? 1 : -1)
+            return
+        }
+
         let plainKey: Character? = {
             guard event.modifierFlags.intersection([.command, .option, .control]).isEmpty,
                   let chars = event.charactersIgnoringModifiers?.lowercased(), chars.count == 1
@@ -1193,6 +1261,8 @@ final class ToolPDFView: PDFView {
         editor.onCommit = { [weak self, weak editor] in self?.commitTextEditing(from: editor) }
         editor.onCancel = { [weak self, weak editor] in self?.cancelTextEditing(from: editor) }
         editor.onToggleBold = { [weak self] in self?.toggleEditingTrait(bold: true) }
+        editor.onBigger = { [weak self] in self?.appState?.stepTextSize(1) }
+        editor.onSmaller = { [weak self] in self?.appState?.stepTextSize(-1) }
         editor.onToggleItalic = { [weak self] in self?.toggleEditingTrait(bold: false) }
         addSubview(editor)
         textEditor = editor
@@ -1226,6 +1296,7 @@ final class ToolPDFView: PDFView {
     }
 
     /// Scroll/zoom no longer ends the session — the editor just follows.
+    /// (The format bar tracks it via refreshSelectionOverlay.)
     func repositionTextEditor() {
         guard textEditor != nil else { return }
         layoutTextEditor()
@@ -1291,6 +1362,10 @@ final class ToolPDFView: PDFView {
             refreshSelectionOverlay()
         } else {
             appState.applyDisplayPolicy(annotation, on: page)
+            if !text.isEmpty, appState.tool == .select {
+                appState.selectedAnnotations = [annotation]
+                appState.selectedAnnotationPage = page
+            }
             if text.isEmpty {
                 Annotations.remove(annotation, from: page, state: appState, actionName: "Delete Text")
             } else if text != oldContents {
@@ -1301,7 +1376,7 @@ final class ToolPDFView: PDFView {
                     oldBounds: oldBounds, state: appState
                 )
             }
-            appState.bumpVersion()
+            appState.bumpVersion(page: page)
             refreshSelectionOverlay()
             setNeedsDisplay(bounds)
         }
@@ -1330,6 +1405,7 @@ final class ToolPDFView: PDFView {
         editingPage = nil
         editingIsNew = false
         window?.makeFirstResponder(self)
+        updateTextFormatBar()
     }
 
     // MARK: - Marquee & resize helpers
@@ -1389,8 +1465,8 @@ final class ToolPDFView: PDFView {
         guard let appState, !appState.selectedAnnotations.isEmpty,
               appState.selectedAnnotations.allSatisfy({ Annotations.isResizable($0) })
         else { return nil }
-        var union = appState.selectedAnnotations[0].bounds
-        for a in appState.selectedAnnotations.dropFirst() { union = union.union(a.bounds) }
+        var union = displayBounds(appState.selectedAnnotations[0])
+        for a in appState.selectedAnnotations.dropFirst() { union = union.union(displayBounds(a)) }
         return union
     }
 
@@ -1450,16 +1526,25 @@ final class ToolPDFView: PDFView {
     /// Draws every hidden Inkwell annotation at full backing resolution —
     /// PDFKit's own annotation pass goes through a resolution-capped buffer
     /// on this OS and pixelates at zoom.
-    func drawCrispAnnotations(in ctx: CGContext) {
+    func drawCrispAnnotations(in ctx: CGContext, dirtyRect: CGRect) {
         guard let appState, appState.hidesOwnAnnotations, let document else { return }
+        inkImageClock += 1
+        let pixelScale = scaleFactor * (window?.backingScaleFactor ?? 2)
+        let zooming = Date.timeIntervalSinceReferenceDate - lastScaleChange < 0.15
+        let editing = editingTextAnnotation
         // Visibility is computed manually — PDFKit's `visiblePages` is
         // unreliable mid-scroll on this OS, which dropped whole pages of ink
         // from the overlay while their thumbnails (PDFKit-rendered) were fine.
         for index in 0..<document.pageCount {
             guard let page = document.page(at: index), page.rotation % 360 == 0 else { continue }
             let pageRect = convert(page.bounds(for: .cropBox), from: page)
-            guard pageRect.intersects(bounds) else { continue }
+            guard pageRect.intersects(dirtyRect) else { continue }
             let origin = convert(CGPoint.zero, from: page)
+            // The repaint region in page space — anything outside is skipped.
+            let dirtyPage = CGRect(
+                x: (dirtyRect.minX - origin.x) / scaleFactor, y: (dirtyRect.minY - origin.y) / scaleFactor,
+                width: dirtyRect.width / scaleFactor, height: dirtyRect.height / scaleFactor
+            )
             ctx.saveGState()
             // Ink belongs to its page: never spill across the page break.
             ctx.clip(to: pageRect)
@@ -1468,26 +1553,93 @@ final class ToolPDFView: PDFView {
             for annotation in page.annotations
             where annotation.userName == Annotations.authorName
                 && !annotation.shouldDisplay
-                && annotation !== editingTextAnnotation {
-                let b = annotation.bounds
-                if annotation.type == "Ink", let paths = annotation.paths {
-                    ctx.saveGState()
-                    ctx.translateBy(x: b.minX, y: b.minY)
-                    annotation.color.setStroke()
-                    let width = annotation.border?.lineWidth ?? 1.5
-                    for path in paths {
-                        path.lineWidth = width
-                        path.lineCapStyle = .round
-                        path.lineJoinStyle = .round
-                        path.stroke()
-                    }
-                    ctx.restoreGState()
+                && annotation !== editing {
+                let transform = livePreview[ObjectIdentifier(annotation)]
+                let shown = transform.map { annotation.bounds.applying($0) } ?? annotation.bounds
+                guard shown.insetBy(dx: -4, dy: -4).intersects(dirtyPage) else { continue }
+                ctx.saveGState()
+                if let transform { ctx.concatenate(transform) }
+                if annotation.type == "Ink" {
+                    drawInk(annotation, in: ctx, pixelScale: pixelScale, allowStale: zooming || transform != nil)
                 } else if annotation.type == "FreeText" {
                     Annotations.drawFreeText(annotation, in: ctx)
                 }
+                ctx.restoreGState()
             }
             ctx.restoreGState()
         }
+        pruneInkImages()
+    }
+
+    private func drawInk(_ annotation: PDFAnnotation, in ctx: CGContext, pixelScale: CGFloat, allowStale: Bool) {
+        guard let paths = annotation.paths else { return }
+        let b = annotation.bounds
+        let width = annotation.border?.lineWidth ?? 1.5
+        var elements = 0
+        for path in paths { elements += path.elementCount }
+        if elements >= Self.denseInkElements,
+           let image = inkImage(for: annotation, paths: paths, lineWidth: width, pixelScale: pixelScale, allowStale: allowStale) {
+            ctx.interpolationQuality = .high
+            ctx.draw(image, in: b)
+            return
+        }
+        ctx.translateBy(x: b.minX, y: b.minY)
+        annotation.color.setStroke()
+        for path in paths {
+            path.lineWidth = width
+            path.lineCapStyle = .round
+            path.lineJoinStyle = .round
+            path.stroke()
+        }
+    }
+
+    /// Dense ink rasterized once at device resolution and reused while it
+    /// only moves; a slightly stale scale is fine mid-zoom/mid-resize (the
+    /// settle nudge re-renders it sharp).
+    private func inkImage(for annotation: PDFAnnotation, paths: [NSBezierPath], lineWidth: CGFloat,
+                          pixelScale: CGFloat, allowStale: Bool) -> CGImage? {
+        let id = ObjectIdentifier(annotation)
+        let size = annotation.bounds.size
+        if var entry = inkImages[id], entry.annotation === annotation, entry.size == size,
+           entry.lineWidth == lineWidth, entry.color == annotation.color {
+            let ratio = entry.pixelScale / pixelScale
+            if abs(ratio - 1) < 0.001 || (allowStale && ratio > 0.4 && ratio < 2.5) {
+                entry.lastUse = inkImageClock
+                inkImages[id] = entry
+                return entry.image
+            }
+        }
+        let pw = Int(ceil(size.width * pixelScale)), ph = Int(ceil(size.height * pixelScale))
+        guard pw > 0, ph > 0, pw * ph <= 16_000_000,
+              let bitmap = CGContext(
+                  data: nil, width: pw, height: ph, bitsPerComponent: 8, bytesPerRow: 0,
+                  space: CGColorSpaceCreateDeviceRGB(),
+                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+              ) else { return nil }
+        bitmap.scaleBy(x: pixelScale, y: pixelScale)
+        let previous = NSGraphicsContext.current
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: bitmap, flipped: false)
+        annotation.color.setStroke()
+        for path in paths {
+            path.lineWidth = lineWidth
+            path.lineCapStyle = .round
+            path.lineJoinStyle = .round
+            path.stroke()
+        }
+        NSGraphicsContext.current = previous
+        guard let image = bitmap.makeImage() else { return nil }
+        inkImages[id] = InkImage(
+            annotation: annotation, size: size, pixelScale: pixelScale,
+            lineWidth: lineWidth, color: annotation.color, image: image, lastUse: inkImageClock
+        )
+        return image
+    }
+
+    private func pruneInkImages() {
+        inkImages = inkImages.filter { $0.value.annotation != nil }
+        guard inkImages.count > 40 else { return }
+        let keep = inkImages.sorted { $0.value.lastUse > $1.value.lastUse }.prefix(40)
+        inkImages = Dictionary(uniqueKeysWithValues: keep.map { ($0.key, $0.value) })
     }
 
     // MARK: - Selection overlay
@@ -1498,7 +1650,7 @@ final class ToolPDFView: PDFView {
         var handles: [CGRect] = []
         if let page = appState.selectedAnnotationPage {
             for annotation in appState.selectedAnnotations {
-                rects.append(convert(annotation.bounds, from: page).insetBy(dx: -3, dy: -3))
+                rects.append(convert(displayBounds(annotation), from: page).insetBy(dx: -3, dy: -3))
             }
             if let union = resizableSelectionUnion() {
                 let b = convert(union, from: page)
@@ -1525,6 +1677,86 @@ final class ToolPDFView: PDFView {
         } else {
             selectionOverlay.gridVisible = false
         }
+        updateTextFormatBar()
+    }
+
+    // MARK: - Live manipulation helpers
+
+    /// Drawn by our overlay (not PDFKit) — safe to preview visually.
+    private func isOverlayDrawn(_ annotation: PDFAnnotation) -> Bool {
+        annotation.userName == Annotations.authorName && !annotation.shouldDisplay
+    }
+
+    /// Where an annotation appears right now (real bounds, or its live preview).
+    private func displayBounds(_ annotation: PDFAnnotation) -> CGRect {
+        guard let t = livePreview[ObjectIdentifier(annotation)] else { return annotation.bounds }
+        return annotation.bounds.applying(t)
+    }
+
+    /// Per-frame refresh during drags: update the chrome without a full-view
+    /// invalidation, then repaint only where things were and are now.
+    private func refreshDuringManipulation() {
+        selectionOverlay.batching = true
+        refreshSelectionOverlay()
+        selectionOverlay.batching = false
+        var now = CGRect.null
+        if let page = appState?.selectedAnnotationPage {
+            let moving = resizeTargets.isEmpty ? dragAnnotations : resizeTargets.map(\.annotation)
+            for annotation in moving {
+                now = now.union(convert(displayBounds(annotation), from: page))
+            }
+        }
+        guard !now.isNull else {
+            selectionOverlay.needsDisplay = true
+            return
+        }
+        now = now.insetBy(dx: -16, dy: -16)
+        let dirty = manipulationDirty.map { $0.union(now) } ?? bounds
+        manipulationDirty = now
+        selectionOverlay.setNeedsDisplay(dirty)
+    }
+
+    // MARK: - Text format bar
+
+    /// Floating size / bold / italic / alignment bar over the selected text
+    /// box (or the one being edited). Lives in PDFView space, so it tracks
+    /// scrolling and zoom without coordinate gymnastics.
+    private func updateTextFormatBar() {
+        guard let appState else { return }
+        var anchor: CGRect?
+        let manipulating = !dragAnnotations.isEmpty || !resizeTargets.isEmpty || marqueeStartView != nil
+        if !manipulating {
+            if let editor = textEditor {
+                anchor = editor.frame
+            } else if let page = appState.selectedAnnotationPage,
+                      let first = appState.selectedAnnotations.first,
+                      appState.selectedAnnotations.allSatisfy({ $0.type == "FreeText" }) {
+                var union = first.bounds
+                for a in appState.selectedAnnotations.dropFirst() { union = union.union(a.bounds) }
+                anchor = convert(union, from: page)
+            }
+        }
+        guard let anchor, anchor.intersects(bounds) else {
+            formatBar?.isHidden = true
+            return
+        }
+        let bar: NSHostingView<TextFormatBar>
+        if let existing = formatBar {
+            bar = existing
+        } else {
+            bar = NSHostingView(rootView: TextFormatBar(appState: appState))
+            addSubview(bar)
+            formatBar = bar
+        }
+        let size = bar.fittingSize
+        var x = anchor.midX - size.width / 2
+        x = min(max(x, bounds.minX + 6), bounds.maxX - size.width - 6)
+        // PDFView is unflipped: "above" the box is larger y.
+        var y = anchor.maxY + 6
+        if y + size.height > bounds.maxY - 6 { y = anchor.minY - 6 - size.height }
+        y = max(y, bounds.minY + 6)
+        bar.frame = CGRect(x: x, y: y, width: size.width, height: size.height)
+        bar.isHidden = false
     }
 }
 
@@ -1538,6 +1770,8 @@ final class InkwellTextView: NSTextView {
     var onCancel: (() -> Void)?
     var onToggleBold: (() -> Void)?
     var onToggleItalic: (() -> Void)?
+    var onBigger: (() -> Void)?
+    var onSmaller: (() -> Void)?
 
     private let sessionUndoManager = UndoManager()
     override var undoManager: UndoManager? { sessionUndoManager }
@@ -1554,6 +1788,8 @@ final class InkwellTextView: NSTextView {
             case "\r": onCommit?(); return
             case "b": onToggleBold?(); return
             case "i": onToggleItalic?(); return
+            case ">", "]": onBigger?(); return
+            case "<", "[": onSmaller?(); return
             default: break
             }
         }
@@ -1592,11 +1828,15 @@ final class InkwellTextView: NSTextView {
 
 /// Transparent overlay that draws a dashed ring around the selected annotation.
 final class SelectionOverlayView: NSView {
+    /// While true, property changes don't invalidate the whole view — the
+    /// caller invalidates just the region that changed.
+    var batching = false
+
     var highlightRects: [CGRect] = [] {
-        didSet { needsDisplay = true }
+        didSet { if !batching { needsDisplay = true } }
     }
     var handleRects: [CGRect] = [] {
-        didSet { needsDisplay = true }
+        didSet { if !batching { needsDisplay = true } }
     }
     var marqueeRect: CGRect? {
         didSet { needsDisplay = true }
@@ -1609,17 +1849,17 @@ final class SelectionOverlayView: NSView {
     var previewLineWidth: CGFloat = 1.5
 
     /// Full-resolution render of Inkwell's annotations (set by ToolPDFView).
-    var crispContentDraw: ((CGContext) -> Void)?
+    var crispContentDraw: ((CGContext, CGRect) -> Void)?
 
     // Zoom-adaptive virtual grid (canvas boards only).
     var gridVisible = false {
-        didSet { needsDisplay = true }
+        didSet { if !batching { needsDisplay = true } }
     }
     var gridOrigin: CGPoint = .zero {
-        didSet { needsDisplay = true }
+        didSet { if !batching { needsDisplay = true } }
     }
     var gridScale: CGFloat = 1 {
-        didSet { needsDisplay = true }
+        didSet { if !batching { needsDisplay = true } }
     }
     var gridPageRect: CGRect = .zero
 
@@ -1630,7 +1870,7 @@ final class SelectionOverlayView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         drawAdaptiveGrid()
         if let ctx = NSGraphicsContext.current?.cgContext {
-            crispContentDraw?(ctx)
+            crispContentDraw?(ctx, dirtyRect)
         }
         if let preview = previewPath {
             previewColor.setStroke()
