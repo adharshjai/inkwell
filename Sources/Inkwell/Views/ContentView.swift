@@ -28,6 +28,9 @@ struct ContentView: View {
         .sheet(isPresented: signatureSheetBinding) {
             SignatureSheet(appState: appState)
         }
+        .sheet(item: tableRequestBinding) { request in
+            TableSheet(appState: appState, request: request)
+        }
         .navigationTitle(appState.displayName)
         .navigationSubtitle(appState.isDirty ? "Edited" : "")
         .frame(minWidth: 900, minHeight: 620)
@@ -234,6 +237,10 @@ struct ContentView: View {
 
     private var exportSheetBinding: Binding<Bool> {
         Binding(get: { appState.showExportSheet }, set: { appState.showExportSheet = $0 })
+    }
+
+    private var tableRequestBinding: Binding<TableRequest?> {
+        Binding(get: { appState.tableRequest }, set: { appState.tableRequest = $0 })
     }
 
     private var signatureSheetBinding: Binding<Bool> {

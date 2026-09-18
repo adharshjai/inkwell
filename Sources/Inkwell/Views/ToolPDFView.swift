@@ -290,6 +290,10 @@ final class ToolPDFView: PDFView {
                     beginEditingText(annotation: hit, page: page, isNew: false)
                     return
                 }
+                if event.clickCount == 2, TableLayout.isTable(hit) {
+                    appState.editTable(hit, on: page)
+                    return
+                }
                 if event.modifierFlags.contains(.shift) {
                     // Defer: release in place ⇒ toggle this item; drag ⇒
                     // additive marquee that starts here.
@@ -362,7 +366,11 @@ final class ToolPDFView: PDFView {
             if !resizeTargets.isEmpty, let corner = resizeCorner,
                let page = appState.selectedAnnotationPage,
                let (eventPage, point) = pagePoint(for: event), eventPage === page {
-                let newUnion = boundsForResize(original: resizeUnionOriginal, corner: corner, to: point)
+                // Tables scale proportionally — stretching would distort the type.
+                let lockAspect = resizeTargets.count == 1 && TableLayout.isTable(resizeTargets[0].annotation)
+                let newUnion = lockAspect
+                    ? proportionalResize(original: resizeUnionOriginal, corner: corner, to: point)
+                    : boundsForResize(original: resizeUnionOriginal, corner: corner, to: point)
                 let sx = newUnion.width / max(resizeUnionOriginal.width, 0.01)
                 let sy = newUnion.height / max(resizeUnionOriginal.height, 0.01)
                 for target in resizeTargets {
@@ -926,6 +934,8 @@ final class ToolPDFView: PDFView {
             ) {
                 Annotations.add(annotation, to: page, state: appState, actionName: "Sign")
             }
+        case .table(let spec):
+            appState.placeTable(spec, on: page, topLeft: point)
         }
         Haptics.thunk()
         if !keepArmed {
@@ -1398,6 +1408,25 @@ final class ToolPDFView: PDFView {
     }
 
     /// New bounds keeping the corner opposite `corner` anchored.
+    private func proportionalResize(original: CGRect, corner: Int, to point: CGPoint) -> CGRect {
+        let anchor: CGPoint
+        switch corner {
+        case 0: anchor = CGPoint(x: original.maxX, y: original.maxY)
+        case 1: anchor = CGPoint(x: original.minX, y: original.maxY)
+        case 2: anchor = CGPoint(x: original.maxX, y: original.minY)
+        default: anchor = CGPoint(x: original.minX, y: original.minY)
+        }
+        let sx = abs(point.x - anchor.x) / max(original.width, 0.01)
+        let sy = abs(point.y - anchor.y) / max(original.height, 0.01)
+        let s = max(max(sx, sy), 16 / max(min(original.width, original.height), 1))
+        let width = original.width * s, height = original.height * s
+        return CGRect(
+            x: point.x >= anchor.x ? anchor.x : anchor.x - width,
+            y: point.y >= anchor.y ? anchor.y : anchor.y - height,
+            width: width, height: height
+        )
+    }
+
     private func boundsForResize(original: CGRect, corner: Int, to point: CGPoint) -> CGRect {
         let anchor: CGPoint
         switch corner {

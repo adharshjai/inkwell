@@ -25,6 +25,7 @@ enum SelfTest {
         testSaveStaysCompact()
         testBackupRotation()
         testTextBoxes()
+        testTables()
         testImagePages()
         testCrispVisibilityPolicy()
         testPaperTemplates()
@@ -792,6 +793,116 @@ enum SelfTest {
         state.pruneBackups(for: base, keep: 5)
         let remaining = backups().filter { $0.hasPrefix(base + " ") }.count
         check(remaining == 5, "prune keeps exactly 5", "kept \(remaining)")
+    }
+
+    // MARK: Tables
+
+    static let sampleTable = """
+    h (m)\tPredicted t (s)\tMeasured t (s)\tDifference
+    0.5\t0.319\t0.323\t+1.3%
+    0.6\t0.350\t0.359\t+2.6%
+    0.7\t0.378\t0.380\t+0.5%
+    0.9\t0.429\t0.432\t+0.7%
+    1.0\t0.452\t0.461\t+2.0%
+    """
+
+    private static func testTables() {
+        print("Tables:")
+        guard let rows = TableLayout.parse(sampleTable, strict: true) else {
+            check(false, "tab-separated paste parses")
+            return
+        }
+        check(rows.count == 6 && rows.allSatisfy { $0.count == 4 }, "tab paste → 6 × 4")
+        check(rows[0][1] == "Predicted t (s)" && rows[5][3] == "+2.0%", "cells land in the right places")
+        check(TableLayout.guessHeader(rows), "header row detected")
+
+        let markdown = "| a | b |\n|---|:--:|\n| 1 | 2 |"
+        check(TableLayout.parse(markdown, strict: true) == [["a", "b"], ["1", "2"]], "Markdown table parses (separator dropped)")
+        check(TableLayout.parse("x,\"y, z\"\n1,2", strict: true) == [["x", "y, z"], ["1", "2"]], "CSV with quotes parses")
+        check(TableLayout.parse("Hello there. This is a sentence.\nAnother line here.", strict: true) == nil,
+              "prose is not mistaken for a table")
+        check(TableLayout.parse("a  b  c\n1  2  3") != nil && TableLayout.parse("a  b\n1  2", strict: true) == nil,
+              "space-aligned columns only in the table sheet")
+
+        check(["0.319", "+1.3%", "−2.5e3", "1,234.5", "45°"].allSatisfy(TableLayout.isNumeric), "numbers recognized")
+        check(!["h (m)", "Difference", "", "N/A"].contains(where: TableLayout.isNumeric), "labels are not numbers")
+
+        let spec = TableSpec(rows: rows, header: true, style: .grid)
+        check(TableLayout.numericColumns(spec) == [true, true, true, true], "data columns right-align")
+        guard let geo = TableLayout.layout(spec, fontSize: 11) else {
+            check(false, "table lays out")
+            return
+        }
+        check(geo.glyphs.count > 60, "glyphs laid out (\(geo.glyphs.count))")
+        check(geo.rules.count == (6 + 1) + (4 + 1), "grid has every row and column rule")
+        if let lines = TableLayout.layout(TableSpec(rows: rows, header: true, style: .lines), fontSize: 11) {
+            check(lines.rules.count == 3, "Lines style = top, header, bottom rules")
+        }
+
+        // Real annotation: builds, round-trips its source, renders, hits.
+        guard let doc = PDFDocument(data: PaperTemplate.blank.pageData()),
+              let page = doc.page(at: 0),
+              let table = Annotations.makeTable(spec, fontSize: 11, topLeft: CGPoint(x: 80, y: 700), color: .black)
+        else {
+            check(false, "table annotation builds")
+            return
+        }
+        check(TableLayout.isTable(table), "annotation is recognized as a table")
+        if let source = TableLayout.decode(table.contents) {
+            check(source.spec == spec, "source round-trips through /Contents")
+            check(abs(source.fontSize - 11) < 0.01, "font size recorded")
+        } else {
+            check(false, "source decodes")
+        }
+        check(Annotations.clone(table).map(TableLayout.isTable) == true, "copies stay editable tables")
+        page.addAnnotation(table)
+        if let render = renderGray(page) {
+            var darkest = 255
+            for x in stride(from: Int(table.bounds.minX), to: Int(table.bounds.maxX), by: 3) {
+                for y in stride(from: Int(table.bounds.midY) - 6, to: Int(table.bounds.midY) + 6, by: 2) {
+                    darkest = min(darkest, sample(render, x: x, y: y))
+                }
+            }
+            check(darkest < 128, "table renders")
+        }
+        let interior = CGPoint(x: table.bounds.midX + 3, y: table.bounds.midY + 2)
+        check(Annotations.preciseHit(at: interior, on: page, tolerance: 1) === table, "click anywhere inside grabs the table")
+        if let saved = doc.dataRepresentation(), let reloaded = PDFDocument(data: saved),
+           let rePage = reloaded.page(at: 0), let reTable = rePage.annotations.first(where: TableLayout.isTable) {
+            check(TableLayout.decode(reTable.contents)?.spec == spec, "table stays editable after save & reload")
+        } else {
+            check(false, "table survives save & reload")
+        }
+    }
+
+    /// `Inkwell --table-demo out.png` — the sample table in all three styles.
+    static func tableDemo(to url: URL) {
+        guard let rows = TableLayout.parse(sampleTable),
+              let doc = PDFDocument(data: PaperTemplate.blank.pageData()),
+              let page = doc.page(at: 0) else { return }
+        var y: CGFloat = 740
+        for style in TableStyle.allCases {
+            let spec = TableSpec(rows: rows, header: true, style: style)
+            if let t = Annotations.makeTable(spec, fontSize: 12, topLeft: CGPoint(x: 60, y: y), color: .black) {
+                page.addAnnotation(t)
+                y = t.bounds.minY - 30
+            }
+        }
+        let scale: CGFloat = 2
+        guard let ctx = CGContext(
+            data: nil, width: Int(612 * scale), height: Int(792 * scale), bitsPerComponent: 8,
+            bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return }
+        ctx.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+        ctx.fill(CGRect(x: 0, y: 0, width: 612 * scale, height: 792 * scale))
+        ctx.scaleBy(x: scale, y: scale)
+        page.draw(with: .cropBox, to: ctx)
+        if let image = ctx.makeImage(),
+           let png = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) {
+            try? png.write(to: url)
+            print("Table demo written to \(url.path)")
+        }
     }
 
     // MARK: Image pages

@@ -26,6 +26,10 @@ enum Boot {
             }
             return
         }
+        if let flagIndex = args.firstIndex(of: "--table-demo"), args.indices.contains(flagIndex + 1) {
+            MainActor.assumeIsolated { SelfTest.tableDemo(to: URL(fileURLWithPath: args[flagIndex + 1])) }
+            return
+        }
         if let flagIndex = args.firstIndex(of: "--typeset-demo"), args.indices.contains(flagIndex + 1) {
             MainActor.assumeIsolated { SelfTest.typesetDemo(to: URL(fileURLWithPath: args[flagIndex + 1])) }
             return
@@ -171,6 +175,10 @@ struct AppCommands: Commands {
                 appState.inspectorTab = .sign
                 appState.showInspector = true
             }
+            Divider()
+            Button("Insert Table…") { appState.openTableSheet() }
+                .keyboardShortcut("t", modifiers: [.command, .shift])
+                .disabled(!appState.hasDocument)
         }
 
         CommandGroup(after: .toolbar) {

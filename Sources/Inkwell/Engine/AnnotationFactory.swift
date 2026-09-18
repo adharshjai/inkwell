@@ -215,7 +215,8 @@ enum Annotations {
         for annotation in page.annotations.reversed() where isEditable(annotation) {
             let bounds = annotation.bounds.insetBy(dx: -tolerance, dy: -tolerance)
             guard bounds.contains(point) else { continue }
-            if annotation.type == "Ink", let paths = annotation.paths {
+            // Tables are hit anywhere inside (their cells are mostly air).
+            if annotation.type == "Ink", !TableLayout.isTable(annotation), let paths = annotation.paths {
                 let local = CGPoint(
                     x: point.x - annotation.bounds.minX,
                     y: point.y - annotation.bounds.minY
@@ -266,6 +267,7 @@ enum Annotations {
         copy.color = annotation.color
         copy.userName = authorName
         copy.shouldPrint = true
+        copy.contents = annotation.contents
         if let border = annotation.border {
             let b = PDFBorder()
             b.lineWidth = border.lineWidth
@@ -701,6 +703,40 @@ enum Annotations {
         for path in paths { path.transform(using: shift) }
         compensateRotation(paths, pageRotation: pageRotation, about: topLeft)
         return makeInk(paths: paths, color: color, width: paths.first?.lineWidth ?? 0.42)
+    }
+
+    /// A table as one ink annotation: hatch-filled glyphs plus solid rules,
+    /// its top-left corner at `topLeft` (page space). The source rides along
+    /// in /Contents so the table can be reopened and edited.
+    static func makeTable(_ spec: TableSpec, fontSize: CGFloat, topLeft: CGPoint, color: NSColor) -> PDFAnnotation? {
+        guard let geo = TableLayout.layout(spec, fontSize: fontSize) else { return nil }
+        let hatch = tableHatchWidth(fontSize: fontSize)
+        var glyphs = TypesetMath.Output()
+        glyphs.glyphs = geo.glyphs
+        var paths = TypesetMath.inkPaths(for: glyphs, strokeWidth: hatch)
+        paths.append(contentsOf: geo.rules.map { TableLayout.ruleStrokes($0, strokeWidth: hatch) })
+        guard !paths.isEmpty else { return nil }
+        let shift = AffineTransform(translationByX: topLeft.x, byY: topLeft.y)
+        for path in paths { path.transform(using: shift) }
+        guard let annotation = makeInk(paths: paths, color: color, width: hatch) else { return nil }
+        annotation.contents = TableLayout.encode(spec, fontSize: fontSize, height: annotation.bounds.height)
+        return annotation
+    }
+
+    static func tableHatchWidth(fontSize: CGFloat) -> CGFloat {
+        min(max(fontSize * 0.024, 0.26), 0.55)
+    }
+
+    /// Nudges an annotation back onto its page if it spills past an edge.
+    static func keepOnPage(_ annotation: PDFAnnotation, page: PDFPage) {
+        let box = page.bounds(for: .cropBox)
+        var dx: CGFloat = 0, dy: CGFloat = 0
+        let b = annotation.bounds
+        if b.maxX > box.maxX { dx = box.maxX - b.maxX }
+        if b.minX + dx < box.minX { dx = box.minX - b.minX }
+        if b.minY < box.minY { dy = box.minY - b.minY }
+        if b.maxY + dy > box.maxY { dy = box.maxY - b.maxY }
+        if dx != 0 || dy != 0 { translate(annotation, by: CGPoint(x: dx, y: dy)) }
     }
 
     /// Typesets casual/LaTeX math and places it as solid vector ink centered

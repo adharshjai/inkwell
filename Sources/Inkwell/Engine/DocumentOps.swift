@@ -601,7 +601,111 @@ extension AppState {
             NSApp.sendAction(#selector(NSText.paste(_:)), to: nil, from: nil)
             return
         }
+        // Something newer than our own copy is on the clipboard: a table
+        // (tabs from Sheets/Excel/Numbers, Markdown pipes, CSV) or text.
+        let pasteboard = NSPasteboard.general
+        if hasDocument, pasteboard.changeCount != ownPasteboardChangeCount,
+           let string = pasteboard.string(forType: .string),
+           !string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            if let rows = TableLayout.parse(string, strict: true) {
+                placeTable(TableSpec(rows: rows, header: TableLayout.guessHeader(rows), style: .grid))
+            } else {
+                placePastedText(string)
+            }
+            return
+        }
         pasteAnnotations()
+    }
+
+    /// Where a paste lands: under the cursor if it's over a page, else the
+    /// middle of what's visible.
+    func pasteTarget() -> (PDFPage, CGPoint)? {
+        guard let view = pdfView else { return nil }
+        if let window = view.window {
+            let viewPoint = view.convert(window.mouseLocationOutsideOfEventStream, from: nil)
+            if view.bounds.contains(viewPoint), let page = view.page(for: viewPoint, nearest: false) {
+                return (page, view.convert(viewPoint, to: page))
+            }
+        }
+        guard let page = view.currentPage ?? document?.page(at: currentPageIndex) else { return nil }
+        let visible = view.convert(view.bounds, to: page)
+        let box = page.bounds(for: .cropBox)
+        return (page, CGPoint(
+            x: min(max(visible.midX, box.minX), box.maxX),
+            y: min(max(visible.midY, box.minY), box.maxY)
+        ))
+    }
+
+    private var pasteZoom: CGFloat { max(pdfView?.scaleFactor ?? 1, 0.05) }
+
+    /// Table font tracks zoom so it reads the same on screen at any zoom.
+    var tableFontSize: CGFloat { min(max(fontSize * 0.85 / pasteZoom, 5), 60) }
+
+    func placeTable(_ spec: TableSpec, on page: PDFPage? = nil, topLeft: CGPoint? = nil) {
+        guard let (targetPage, point) = page.flatMap({ p in topLeft.map { (p, $0) } }) ?? pasteTarget() else { return }
+        guard let table = Annotations.makeTable(spec, fontSize: tableFontSize, topLeft: point, color: inkColor) else {
+            flash("Couldn’t build that table")
+            return
+        }
+        Annotations.keepOnPage(table, page: targetPage)
+        Annotations.add(table, to: targetPage, state: self, actionName: "Insert Table")
+        tool = .select
+        selectedAnnotations = [table]
+        selectedAnnotationPage = targetPage
+        pdfView?.refreshSelectionOverlay()
+        Haptics.thunk()
+        flash("Table placed — drag to move · corner to resize · double-click to edit", seconds: 3)
+    }
+
+    func placePastedText(_ string: String) {
+        guard let (page, point) = pasteTarget() else { return }
+        let text = string.trimmingCharacters(in: .whitespacesAndNewlines)
+        let box = Annotations.makeFreeText(
+            text, near: point, on: page,
+            fontSize: min(max(fontSize / pasteZoom, 5), 96), color: inkColor,
+            width: min(max(360 / pasteZoom, 120), 900),
+            bold: textBold, italic: textItalic, alignment: textAlignment
+        )
+        Annotations.add(box, to: page, state: self, actionName: "Paste Text")
+        tool = .select
+        selectedAnnotations = [box]
+        selectedAnnotationPage = page
+        pdfView?.refreshSelectionOverlay()
+        Haptics.thunk()
+    }
+
+    func openTableSheet() {
+        tableRequest = TableRequest(text: "")
+    }
+
+    func editTable(_ annotation: PDFAnnotation, on page: PDFPage) {
+        guard let source = TableLayout.decode(annotation.contents) else { return }
+        tableRequest = TableRequest(
+            text: TableLayout.editableText(source.spec),
+            header: source.spec.header, style: source.spec.style,
+            editing: annotation, page: page
+        )
+    }
+
+    /// Re-renders an edited table in place: same top-left, same scale.
+    func replaceTable(_ old: PDFAnnotation, on page: PDFPage, with spec: TableSpec) {
+        guard let source = TableLayout.decode(old.contents) else { return }
+        let scale = source.height > 0 ? old.bounds.height / source.height : 1
+        let fontSize = source.fontSize * scale
+        let inset = (Annotations.tableHatchWidth(fontSize: source.fontSize) + 4) * scale
+        let topLeft = CGPoint(x: old.bounds.minX + inset, y: old.bounds.maxY - inset)
+        guard let table = Annotations.makeTable(spec, fontSize: fontSize, topLeft: topLeft, color: old.color) else {
+            flash("Couldn’t build that table")
+            return
+        }
+        undoManager?.beginUndoGrouping()
+        Annotations.remove(old, from: page, state: self, actionName: "Edit Table")
+        Annotations.add(table, to: page, state: self, actionName: "Edit Table")
+        undoManager?.endUndoGrouping()
+        tool = .select
+        selectedAnnotations = [table]
+        selectedAnnotationPage = page
+        pdfView?.refreshSelectionOverlay()
     }
 
     func copySelectedAnnotations() {
@@ -620,6 +724,7 @@ extension AppState {
                 pasteboard.setData(png, forType: .png)
             }
         }
+        ownPasteboardChangeCount = NSPasteboard.general.changeCount
         flash("Copied \(clones.count) item\(clones.count == 1 ? "" : "s") — ⌘V pastes here, or paste as an image anywhere", seconds: 2.2)
     }
 

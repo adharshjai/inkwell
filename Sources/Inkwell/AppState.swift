@@ -76,6 +76,7 @@ enum PendingPlacement {
     case mathText(String)
     case stamp(Stamp)
     case signature(Signature)
+    case table(TableSpec)
 
     var hint: String {
         switch self {
@@ -83,6 +84,7 @@ enum PendingPlacement {
         case .mathText: "Click the page to place your equation — Esc to cancel"
         case .stamp(let s): "Click the page to place “\(s.name)” — Esc to cancel"
         case .signature: "Click the page to place your signature — Esc to cancel"
+        case .table: "Click where the table’s top-left corner should go — Esc to cancel"
         }
     }
 }
@@ -129,6 +131,16 @@ enum InspectorTab: String, CaseIterable, Identifiable {
 struct InsertionGap: Equatable {
     let index: Int        // page index a new page would take
     let viewRect: CGRect  // gap rect in PDFView coordinates
+}
+
+/// State for the Insert/Edit Table sheet.
+struct TableRequest: Identifiable {
+    let id = UUID()
+    var text: String
+    var header: Bool = true
+    var style: TableStyle = .grid
+    var editing: PDFAnnotation?
+    var page: PDFPage?
 }
 
 // MARK: - App state
@@ -192,6 +204,11 @@ final class AppState {
 
     var pendingPlacement: PendingPlacement?
     var insertionGap: InsertionGap?
+    /// The Insert/Edit Table sheet, when open.
+    var tableRequest: TableRequest?
+    /// Pasteboard generation our own annotation copy wrote — anything newer
+    /// on the system clipboard (text, a table) wins on ⌘V.
+    @ObservationIgnored var ownPasteboardChangeCount = -1
 
     // Notes mode & quasimodes
     var notesMode = false
