@@ -14,6 +14,25 @@ enum Annotations {
 
     static let authorName = "Inkwell"
 
+    // MARK: - Grouping
+    //
+    // Annotations that belong to one object (a pasted code block's colored
+    // runs) carry a group tag in their author name, so selecting, moving,
+    // resizing, copying, or erasing any member takes the whole block.
+
+    static func groupedAuthor(_ id: String) -> String { "\(authorName):g:\(id)" }
+
+    static func newGroupID() -> String { String(UUID().uuidString.prefix(8)) }
+
+    static func isOurs(_ annotation: PDFAnnotation) -> Bool {
+        annotation.userName?.hasPrefix(authorName) ?? false
+    }
+
+    static func groupID(of annotation: PDFAnnotation) -> String? {
+        guard let name = annotation.userName, let marker = name.range(of: ":g:") else { return nil }
+        return String(name[marker.upperBound...])
+    }
+
     // MARK: - Undoable add / remove
 
     static func add(_ annotation: PDFAnnotation, to page: PDFPage, state: AppState, actionName: String) {
@@ -266,7 +285,7 @@ enum Annotations {
             withProperties: nil
         )
         copy.color = annotation.color
-        copy.userName = authorName
+        copy.userName = annotation.userName ?? authorName
         copy.shouldPrint = true
         copy.contents = annotation.contents
         if let border = annotation.border {
@@ -545,9 +564,10 @@ enum Annotations {
     static func makeFreeText(
         _ text: String, near point: CGPoint, on page: PDFPage,
         fontSize: CGFloat, color: NSColor, width: CGFloat = 260,
-        bold: Bool = false, italic: Bool = false, alignment: NSTextAlignment = .left
+        bold: Bool = false, italic: Bool = false, alignment: NSTextAlignment = .left,
+        font requestedFont: NSFont? = nil
     ) -> PDFAnnotation {
-        var font = textBaseFont(size: fontSize)
+        var font = requestedFont ?? textBaseFont(size: fontSize)
         if bold { font = NSFontManager.shared.convert(font, toHaveTrait: .boldFontMask) }
         if italic { font = NSFontManager.shared.convert(font, toHaveTrait: .italicFontMask) }
         let boxWidth = max(width, 40)
@@ -704,6 +724,56 @@ enum Annotations {
         for path in paths { path.transform(using: shift) }
         compensateRotation(paths, pageRotation: pageRotation, about: topLeft)
         return makeInk(paths: paths, color: color, width: paths.first?.lineWidth ?? 0.42)
+    }
+
+    /// Lays a pasted code block out on the monospace grid: one text run per
+    /// colored token, all tagged into a single group. Real text, so it stays
+    /// crisp, searchable, and small in the file — and keeps its syntax colors.
+    static func makeCodeBlock(
+        _ spec: CodeBlockSpec, fontSize: CGFloat, topLeft: CGPoint,
+        on page: PDFPage, maxWidth: CGFloat
+    ) -> [PDFAnnotation] {
+        func monoFont(_ size: CGFloat) -> NSFont {
+            NSFont(name: spec.fontName, size: size)
+                ?? NSFont.monospacedSystemFont(ofSize: size, weight: .regular)
+        }
+        let probe = monoFont(fontSize)
+        let advancePerPoint = ("0" as NSString).size(withAttributes: [.font: probe]).width / fontSize
+        guard advancePerPoint > 0 else { return [] }
+
+        // Shrink a little to fit the page, then wrap whatever is still too wide.
+        let fits = maxWidth / (CGFloat(spec.longestLine) * advancePerPoint)
+        let size = max(min(fontSize, max(fits, fontSize * 0.6)), 5).rounded()
+        let font = monoFont(size)
+        let advance = advancePerPoint * size
+        let maxCharacters = max(Int(maxWidth / max(advance, 0.01)), 12)
+        let lines = CodeBlock.wrap(spec.lines, at: maxCharacters)
+
+        let lineHeight = (font.ascender - font.descender) * 1.22
+        let group = newGroupID()
+        var annotations: [PDFAnnotation] = []
+        for (row, line) in lines.enumerated() {
+            let lineTop = topLeft.y - CGFloat(row) * lineHeight
+            var column = 0
+            for run in line {
+                let count = run.text.count
+                defer { column += count }
+                guard !run.text.trimmingCharacters(in: .whitespaces).isEmpty else { continue }
+                var runFont = font
+                if run.bold { runFont = NSFontManager.shared.convert(runFont, toHaveTrait: .boldFontMask) }
+                if run.italic { runFont = NSFontManager.shared.convert(runFont, toHaveTrait: .italicFontMask) }
+                let annotation = makeFreeText(
+                    run.text,
+                    near: CGPoint(x: topLeft.x + CGFloat(column) * advance - textInset, y: lineTop),
+                    on: page, fontSize: size, color: run.color,
+                    width: advance * CGFloat(count) + textInset * 2 + 2,
+                    font: runFont
+                )
+                annotation.userName = groupedAuthor(group)
+                annotations.append(annotation)
+            }
+        }
+        return annotations
     }
 
     /// A table as one ink annotation: hatch-filled glyphs plus solid rules,

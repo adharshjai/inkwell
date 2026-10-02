@@ -27,6 +27,7 @@ enum SelfTest {
         testTextBoxes()
         testTables()
         testTextSizeAndRevisions()
+        testCodePaste()
         testOverlayRenderer()
         testImagePages()
         testCrispVisibilityPolicy()
@@ -103,7 +104,7 @@ enum SelfTest {
             if drawHiddenInk {
                 let prev = NSGraphicsContext.current
                 NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: false)
-                for a in page.annotations where a.userName == Annotations.authorName && !a.shouldDisplay {
+                for a in page.annotations where Annotations.isOurs(a) && !a.shouldDisplay {
                     let b = a.bounds
                     if a.type == "Ink", let paths = a.paths {
                         ctx.saveGState()
@@ -913,7 +914,7 @@ enum SelfTest {
         let prev = NSGraphicsContext.current
         NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: false)
         func strokeAll(_ filter: (PDFAnnotation) -> Bool) {
-            for a in page.annotations where a.userName == Annotations.authorName && a.type == "Ink" && filter(a) {
+            for a in page.annotations where Annotations.isOurs(a) && a.type == "Ink" && filter(a) {
                 ctx.saveGState()
                 ctx.translateBy(x: a.bounds.minX, y: a.bounds.minY)
                 a.color.setStroke()
@@ -970,6 +971,118 @@ enum SelfTest {
            let png = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) {
             try? png.write(to: url)
             print("Table demo written to \(url.path)")
+        }
+    }
+
+    // MARK: Pasted code
+
+    /// A dark-theme snippet as an editor would put it on the clipboard.
+    static func sampleCode() -> NSAttributedString {
+        let mono = NSFont(name: "Menlo", size: 12) ?? NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        let keyword = NSColor(srgbRed: 0.78, green: 0.57, blue: 0.95, alpha: 1)   // light purple
+        let type = NSColor(srgbRed: 0.31, green: 0.78, blue: 0.95, alpha: 1)      // light cyan
+        let string = NSColor(srgbRed: 0.80, green: 0.56, blue: 0.47, alpha: 1)
+        let plain = NSColor(srgbRed: 0.85, green: 0.86, blue: 0.88, alpha: 1)     // near-white
+        let comment = NSColor(srgbRed: 0.42, green: 0.60, blue: 0.40, alpha: 1)
+        let out = NSMutableAttributedString()
+        func add(_ text: String, _ color: NSColor) {
+            out.append(NSAttributedString(string: text, attributes: [.font: mono, .foregroundColor: color]))
+        }
+        add("// terminal velocity\n", comment)
+        add("func", keyword); add(" ", plain); add("velocity", type)
+        add("(t: ", plain); add("Double", type); add(") -> ", plain); add("Double", type); add(" {\n", plain)
+        add("    let", keyword); add(" vt = m * g / b\n", plain)
+        add("    return", keyword); add(" vt * (", plain); add("1.0", string)
+        add(" - exp(-b * t / m))\n", plain)
+        add("}", plain)
+        return out
+    }
+
+    private static func testCodePaste() {
+        print("Pasted code:")
+        let rich = sampleCode()
+        check(CodeBlock.monospaceRatio(rich) > 0.99, "monospaced rich text is recognized as code")
+        check(CodeBlock.monospaceRatio(NSAttributedString(
+            string: "hello", attributes: [.font: NSFont.systemFont(ofSize: 12)]
+        )) == 0, "proportional text is not code")
+        check(CodeBlock.looksLikeCode("func f() {\n    return 1;\n}"), "plain source is recognized")
+        check(!CodeBlock.looksLikeCode("h (m)\t0.5\n0.6\t0.7"), "a pasted table is never treated as code")
+        check(!CodeBlock.looksLikeCode("This is a sentence.\nAnd another one."), "prose is not code")
+
+        guard let spec = CodeBlock.spec(from: rich) else {
+            check(false, "spec builds")
+            return
+        }
+        check(spec.lines.count == 5, "lines preserved (\(spec.lines.count))")
+        check(spec.fontName.lowercased().contains("menlo"), "monospaced font kept (\(spec.fontName))")
+        let colors = Set(spec.lines.flatMap { $0 }.map { $0.color.usingColorSpace(.sRGB)?.description ?? "" })
+        check(colors.count >= 4, "syntax colors survive (\(colors.count) distinct)")
+        let brightest = spec.lines.flatMap { $0 }
+            .filter { !$0.text.trimmingCharacters(in: .whitespaces).isEmpty }
+            .map { CodeBlock.luminance($0.color) }.max() ?? 1
+        check(brightest < 0.62, "dark-theme palette darkened for white paper (max luminance \(String(format: "%.2f", brightest)))")
+        // Hue survives the darkening.
+        let purple = CodeBlock.readableOnPaper(NSColor(srgbRed: 0.78, green: 0.57, blue: 0.95, alpha: 1))
+        var h: CGFloat = 0, s2: CGFloat = 0, b2: CGFloat = 0, a2: CGFloat = 0
+        purple.usingColorSpace(.sRGB)?.getHue(&h, saturation: &s2, brightness: &b2, alpha: &a2)
+        check(h > 0.68 && h < 0.80, "purple stays purple")
+
+        guard let doc = PDFDocument(data: PaperTemplate.blank.pageData()),
+              let page = doc.page(at: 0) else {
+            check(false, "blank doc")
+            return
+        }
+        let runs = Annotations.makeCodeBlock(spec, fontSize: 11, topLeft: CGPoint(x: 72, y: 700), on: page, maxWidth: 460)
+        check(runs.count >= 12, "one annotation per colored run (\(runs.count))")
+        check(runs.allSatisfy { CodeBlock.isMonospaced($0.font ?? NSFont.systemFont(ofSize: 12)) }, "runs are monospaced")
+        let groups = Set(runs.compactMap(Annotations.groupID))
+        check(groups.count == 1, "the block is one group")
+        check(runs.allSatisfy { Annotations.isOurs($0) }, "grouped runs still count as ours")
+
+        // Monospace grid: runs that start at the same column line up.
+        let state = AppState()
+        state.hidesOwnAnnotations = true
+        state.document = doc
+        for run in runs { Annotations.add(run, to: page, state: state, actionName: "Paste Code") }
+        settle()
+        let lineStarts = Dictionary(grouping: runs) { Int(($0.bounds.maxY * 10).rounded()) }
+            .values.compactMap { $0.map(\.bounds.minX).min() }
+        check(Set(lineStarts.map { Int(($0 * 10).rounded()) }).count <= 2, "lines share a left margin")
+        check(state.withOwnAnnotationsVisible(on: page) { runs.allSatisfy(\.shouldDisplay) }, "code is included in saves")
+
+        // Grouped runs survive a save and reload as one block.
+        if let data = doc.dataRepresentation(), let reloaded = PDFDocument(data: data),
+           let rePage = reloaded.page(at: 0) {
+            let reGroups = Set(rePage.annotations.compactMap(Annotations.groupID))
+            check(reGroups.count == 1, "group tag survives save & reload")
+        } else {
+            check(false, "code survives save & reload")
+        }
+    }
+
+    /// `Inkwell --code-demo out.png` — the sample snippet as pasted.
+    static func codeDemo(to url: URL) {
+        guard let spec = CodeBlock.spec(from: sampleCode()),
+              let doc = PDFDocument(data: PaperTemplate.blank.pageData()),
+              let page = doc.page(at: 0) else { return }
+        for run in Annotations.makeCodeBlock(spec, fontSize: 11, topLeft: CGPoint(x: 60, y: 740), on: page, maxWidth: 480) {
+            page.addAnnotation(run)
+        }
+        let scale: CGFloat = 3
+        guard let ctx = CGContext(
+            data: nil, width: Int(560 * scale), height: Int(190 * scale), bitsPerComponent: 8,
+            bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return }
+        ctx.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+        ctx.fill(CGRect(x: 0, y: 0, width: 560 * scale, height: 190 * scale))
+        ctx.scaleBy(x: scale, y: scale)
+        ctx.translateBy(x: -40, y: -600)
+        page.draw(with: .cropBox, to: ctx)
+        if let image = ctx.makeImage(),
+           let png = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) {
+            try? png.write(to: url)
+            print("Code demo written to \(url.path)")
         }
     }
 

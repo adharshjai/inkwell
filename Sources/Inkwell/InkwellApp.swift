@@ -26,6 +26,10 @@ enum Boot {
             }
             return
         }
+        if let flagIndex = args.firstIndex(of: "--code-demo"), args.indices.contains(flagIndex + 1) {
+            MainActor.assumeIsolated { SelfTest.codeDemo(to: URL(fileURLWithPath: args[flagIndex + 1])) }
+            return
+        }
         if let flagIndex = args.firstIndex(of: "--bench"), args.indices.contains(flagIndex + 1) {
             MainActor.assumeIsolated { SelfTest.bench(url: URL(fileURLWithPath: args[flagIndex + 1])) }
             return

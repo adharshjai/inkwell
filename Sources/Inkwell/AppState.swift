@@ -297,7 +297,7 @@ final class AppState {
         for index in 0..<document.pageCount {
             guard let page = document.page(at: index), page.rotation % 360 == 0 else { continue }
             for annotation in page.annotations
-            where annotation.userName == Annotations.authorName
+            where Annotations.isOurs(annotation)
                 && ["Ink", "FreeText"].contains(annotation.type ?? "") {
                 // Reloaded ink arrives with page-space paths — rebase before
                 // the overlay draws or hit-tests it.
@@ -315,7 +315,7 @@ final class AppState {
         for index in 0..<document.pageCount {
             guard let page = document.page(at: index) else { continue }
             for annotation in page.annotations
-            where annotation.userName == Annotations.authorName && !annotation.shouldDisplay {
+            where Annotations.isOurs(annotation) && !annotation.shouldDisplay {
                 annotation.shouldDisplay = true
                 hidden.append(annotation)
             }
@@ -332,7 +332,7 @@ final class AppState {
         guard hidesOwnAnnotations else { return body() }
         var hidden: [PDFAnnotation] = []
         for annotation in page.annotations
-        where annotation.userName == Annotations.authorName && !annotation.shouldDisplay {
+        where Annotations.isOurs(annotation) && !annotation.shouldDisplay {
             annotation.shouldDisplay = true
             hidden.append(annotation)
         }
@@ -344,7 +344,7 @@ final class AppState {
 
     /// The display state an Inkwell annotation should have while in the view.
     func applyDisplayPolicy(_ annotation: PDFAnnotation, on page: PDFPage) {
-        let ours = annotation.userName == Annotations.authorName
+        let ours = Annotations.isOurs(annotation)
             && ["Ink", "FreeText"].contains(annotation.type ?? "")
             && page.rotation % 360 == 0
         annotation.shouldDisplay = !(hidesOwnAnnotations && ours)

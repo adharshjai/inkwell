@@ -334,7 +334,7 @@ final class ToolPDFView: PDFView {
                     return
                 }
                 if !appState.selectedAnnotations.contains(where: { $0 === hit }) || appState.selectedAnnotationPage !== page {
-                    appState.selectedAnnotations = [hit]
+                    appState.selectedAnnotations = expandToGroups([hit], on: page)
                     appState.selectedAnnotationPage = page
                 }
                 dragAnnotations = appState.selectedAnnotations
@@ -700,7 +700,9 @@ final class ToolPDFView: PDFView {
             appState.undoManager?.beginUndoGrouping()
             eraserGroupOpen = true
         }
-        Annotations.remove(hit, from: page, state: appState, actionName: "Erase")
+        for member in expandToGroups([hit], on: page) {
+            Annotations.remove(member, from: page, state: appState, actionName: "Erase")
+        }
         Haptics.tick()
         return true
     }
@@ -1421,14 +1423,17 @@ final class ToolPDFView: PDFView {
         guard rect.width > 3 || rect.height > 3 else {
             // A ⇧-press that never became a drag: toggle the pressed item.
             if let toggle = pendingShiftToggle {
+                let members = expandToGroups([toggle], on: page)
                 if appState.selectedAnnotationPage === page {
                     if appState.selectedAnnotations.contains(where: { $0 === toggle }) {
-                        appState.selectedAnnotations.removeAll { $0 === toggle }
+                        appState.selectedAnnotations.removeAll { m in members.contains { $0 === m } }
                     } else {
-                        appState.selectedAnnotations.append(toggle)
+                        appState.selectedAnnotations.append(contentsOf: members.filter { m in
+                            !appState.selectedAnnotations.contains { $0 === m }
+                        })
                     }
                 } else {
-                    appState.selectedAnnotations = [toggle]
+                    appState.selectedAnnotations = members
                 }
                 appState.selectedAnnotationPage = appState.selectedAnnotations.isEmpty ? nil : page
                 pendingShiftToggle = nil
@@ -1437,9 +1442,10 @@ final class ToolPDFView: PDFView {
             return
         }
         pendingShiftToggle = nil
-        let hits = page.annotations.filter {
-            Annotations.isEditable($0) && $0.bounds.intersects(rect)
-        }
+        let hits = expandToGroups(
+            page.annotations.filter { Annotations.isEditable($0) && $0.bounds.intersects(rect) },
+            on: page
+        )
         if marqueeAdditive, appState.selectedAnnotationPage === page {
             var merged = appState.selectedAnnotations
             for hit in hits where !merged.contains(where: { $0 === hit }) {
@@ -1551,7 +1557,7 @@ final class ToolPDFView: PDFView {
             ctx.translateBy(x: origin.x, y: origin.y)
             ctx.scaleBy(x: scaleFactor, y: scaleFactor)
             for annotation in page.annotations
-            where annotation.userName == Annotations.authorName
+            where Annotations.isOurs(annotation)
                 && !annotation.shouldDisplay
                 && annotation !== editing {
                 let transform = livePreview[ObjectIdentifier(annotation)]
@@ -1682,9 +1688,21 @@ final class ToolPDFView: PDFView {
 
     // MARK: - Live manipulation helpers
 
+    /// Members of a grouped object (a pasted code block) travel together.
+    private func expandToGroups(_ hits: [PDFAnnotation], on page: PDFPage) -> [PDFAnnotation] {
+        let ids = Set(hits.compactMap(Annotations.groupID))
+        guard !ids.isEmpty else { return hits }
+        var result = hits
+        for annotation in page.annotations
+        where !result.contains(where: { $0 === annotation }) {
+            if let id = Annotations.groupID(of: annotation), ids.contains(id) { result.append(annotation) }
+        }
+        return result
+    }
+
     /// Drawn by our overlay (not PDFKit) — safe to preview visually.
     private func isOverlayDrawn(_ annotation: PDFAnnotation) -> Bool {
-        annotation.userName == Annotations.authorName && !annotation.shouldDisplay
+        Annotations.isOurs(annotation) && !annotation.shouldDisplay
     }
 
     /// Where an annotation appears right now (real bounds, or its live preview).

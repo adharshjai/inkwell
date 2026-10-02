@@ -604,11 +604,22 @@ extension AppState {
         // Something newer than our own copy is on the clipboard: a table
         // (tabs from Sheets/Excel/Numbers, Markdown pipes, CSV) or text.
         let pasteboard = NSPasteboard.general
+        // Code copied from an editor arrives as rich text: keep its colors
+        // and monospaced font rather than flattening it to plain text.
+        if hasDocument, pasteboard.changeCount != ownPasteboardChangeCount,
+           let rich = CodeBlock.attributedText(from: pasteboard),
+           CodeBlock.monospaceRatio(rich) > 0.6,
+           let spec = CodeBlock.spec(from: rich) {
+            placeCode(spec)
+            return
+        }
         if hasDocument, pasteboard.changeCount != ownPasteboardChangeCount,
            let string = pasteboard.string(forType: .string),
            !string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             if let rows = TableLayout.parse(string, strict: true) {
                 placeTable(TableSpec(rows: rows, header: TableLayout.guessHeader(rows), style: .grid))
+            } else if CodeBlock.looksLikeCode(string), let spec = CodeBlock.spec(fromPlain: string) {
+                placeCode(spec)
             } else {
                 placePastedText(string)
             }
@@ -655,6 +666,30 @@ extension AppState {
         pdfView?.refreshSelectionOverlay()
         Haptics.thunk()
         flash("Table placed — drag to move · corner to resize · double-click to edit", seconds: 3)
+    }
+
+    /// Places a pasted code block at the cursor, selected and ready to move.
+    func placeCode(_ spec: CodeBlockSpec) {
+        guard let (page, point) = pasteTarget() else { return }
+        let box = page.bounds(for: .cropBox)
+        let size = max(min(fontSize, 11) / pasteZoom, 4).rounded()
+        let runs = Annotations.makeCodeBlock(
+            spec, fontSize: size, topLeft: point, on: page,
+            maxWidth: max(box.maxX - 36 - point.x, 140)
+        )
+        guard !runs.isEmpty else {
+            flash("Couldn’t lay that code out")
+            return
+        }
+        undoManager?.beginUndoGrouping()
+        for run in runs { Annotations.add(run, to: page, state: self, actionName: "Paste Code") }
+        undoManager?.endUndoGrouping()
+        tool = .select
+        selectedAnnotations = runs
+        selectedAnnotationPage = page
+        pdfView?.refreshSelectionOverlay()
+        Haptics.thunk()
+        flash("Code pasted with its colors — \(spec.lines.count) line\(spec.lines.count == 1 ? "" : "s")", seconds: 2.5)
     }
 
     func placePastedText(_ string: String) {
@@ -735,8 +770,14 @@ extension AppState {
         let offset = CGFloat(pasteCascade) * 16
 
         var pasted: [PDFAnnotation] = []
+        var regroup: [String: String] = [:]   // a pasted copy is its own group
         for template in annotationClipboard {
             guard let clone = Annotations.clone(template) else { continue }
+            if let old = Annotations.groupID(of: template) {
+                let fresh = regroup[old] ?? Annotations.newGroupID()
+                regroup[old] = fresh
+                clone.userName = Annotations.groupedAuthor(fresh)
+            }
             Annotations.translate(clone, by: CGPoint(x: offset, y: -offset))
             pasted.append(clone)
         }
