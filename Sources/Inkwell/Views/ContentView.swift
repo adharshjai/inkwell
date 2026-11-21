@@ -32,8 +32,21 @@ struct ContentView: View {
             TableSheet(appState: appState, request: request)
         }
         .navigationTitle(appState.displayName)
-        .navigationSubtitle(appState.isDirty ? "Edited" : "")
+        .navigationSubtitle(subtitle)
         .frame(minWidth: 900, minHeight: 620)
+    }
+
+    private static let editDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "MMM d, h:mm a"
+        formatter.amSymbol = "am"
+        formatter.pmSymbol = "pm"
+        return formatter
+    }()
+
+    private var subtitle: String {
+        guard appState.isDirty, let date = appState.lastEditDate else { return "" }
+        return "Last Edit Made on \(Self.editDateFormatter.string(from: date))"
     }
 
     // MARK: Editor

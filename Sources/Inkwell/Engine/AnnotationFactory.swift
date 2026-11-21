@@ -235,8 +235,9 @@ enum Annotations {
         for annotation in page.annotations.reversed() where isEditable(annotation) {
             let bounds = annotation.bounds.insetBy(dx: -tolerance, dy: -tolerance)
             guard bounds.contains(point) else { continue }
-            // Tables are hit anywhere inside (their cells are mostly air).
-            if annotation.type == "Ink", !TableLayout.isTable(annotation), let paths = annotation.paths {
+            // Block objects are hit anywhere inside (a table's cells and the
+            // space between an equation's glyphs are mostly air).
+            if annotation.type == "Ink", !isBlockObject(annotation), let paths = annotation.paths {
                 let local = CGPoint(
                     x: point.x - annotation.bounds.minX,
                     y: point.y - annotation.bounds.minY
@@ -724,6 +725,60 @@ enum Annotations {
         for path in paths { path.transform(using: shift) }
         compensateRotation(paths, pageRotation: pageRotation, about: topLeft)
         return makeInk(paths: paths, color: color, width: paths.first?.lineWidth ?? 0.42)
+    }
+
+    static let mathMarker = "[inkwell-math"
+
+    static func isMathBlock(_ annotation: PDFAnnotation) -> Bool {
+        annotation.type == "Ink" && (annotation.contents?.hasPrefix(mathMarker) ?? false)
+    }
+
+    /// Clicking anywhere inside picks it up — block objects (tables, pasted
+    /// equations) are mostly whitespace between their strokes.
+    static func isBlockObject(_ annotation: PDFAnnotation) -> Bool {
+        TableLayout.isTable(annotation) || isMathBlock(annotation)
+    }
+
+    /// Typesets pasted LaTeX as stacked lines of vector ink, left-aligned at
+    /// `topLeft`, shrunk together if the widest line overruns `maxWidth`.
+    /// Every line carries its source, and they share a group so the block
+    /// moves, copies, and erases as one.
+    static func makeMathBlock(
+        latexLines lines: [String], fontSize: CGFloat, topLeft: CGPoint,
+        maxWidth: CGFloat, color: NSColor, pageRotation: Int = 0
+    ) -> [PDFAnnotation] {
+        func measure(_ size: CGFloat) -> [(line: String, output: TypesetMath.Output)] {
+            lines.compactMap { line in
+                guard let (output, _) = TypesetMath.layout(line, fontSize: size), !output.isEmpty else { return nil }
+                return (line, output)
+            }
+        }
+        var measured = measure(fontSize)
+        guard !measured.isEmpty else { return [] }
+        let widest = measured.map(\.output.width).max() ?? 1
+        var size = fontSize
+        if widest > maxWidth, maxWidth > 0 {
+            size = max(fontSize * (maxWidth / widest), 5)
+            measured = measure(size)
+            guard !measured.isEmpty else { return [] }
+        }
+
+        let group = newGroupID()
+        var cursor = topLeft.y
+        var annotations: [PDFAnnotation] = []
+        for (line, output) in measured {
+            let center = CGPoint(
+                x: topLeft.x + output.width / 2,
+                y: cursor - output.ascent + (output.ascent - output.descent) / 2
+            )
+            if let annotation = makeTypesetMath(line, fontSize: size, centeredAt: center, color: color, pageRotation: pageRotation) {
+                annotation.contents = "\(mathMarker) v1 fs=\(size)]\n\(line)"
+                annotation.userName = groupedAuthor(group)
+                annotations.append(annotation)
+            }
+            cursor -= output.ascent + output.descent + size * 0.45
+        }
+        return annotations
     }
 
     /// Lays a pasted code block out on the monospace grid: one text run per

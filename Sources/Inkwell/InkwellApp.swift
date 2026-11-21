@@ -26,6 +26,14 @@ enum Boot {
             }
             return
         }
+        if args.contains("--gap-probe") {
+            MainActor.assumeIsolated { SelfTest.gapProbe() }
+            return
+        }
+        if let flagIndex = args.firstIndex(of: "--math-demo"), args.indices.contains(flagIndex + 1) {
+            MainActor.assumeIsolated { SelfTest.mathDemo(to: URL(fileURLWithPath: args[flagIndex + 1])) }
+            return
+        }
         if let flagIndex = args.firstIndex(of: "--code-demo"), args.indices.contains(flagIndex + 1) {
             MainActor.assumeIsolated { SelfTest.codeDemo(to: URL(fileURLWithPath: args[flagIndex + 1])) }
             return

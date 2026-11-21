@@ -73,7 +73,10 @@ enum CodeBlock {
         guard lines.count >= 2 else { return false }
         let keywords = ["func ", "def ", "class ", "import ", "return", "const ", "let ", "var ", "if ", "for ",
                         "while ", "public ", "private ", "void ", "int ", "float ", "double ", "print(", "#include",
-                        "function", "struct ", "enum ", "else", "self.", "this.", "</", "/>"]
+                        "function", "struct ", "enum ", "else", "self.", "this.", "</", "/>",
+                        // Terminal transcripts paste as code too.
+                        "echo ", "cd ", "ls ", "git ", "npm ", "pip ", "sudo ", "cat ", "grep ", "mkdir ",
+                        "python ", "swift ", "make ", "brew ", "$ "]
         var hits = 0
         for line in lines {
             let trimmed = line.trimmingCharacters(in: .whitespaces)

@@ -28,6 +28,7 @@ enum SelfTest {
         testTables()
         testTextSizeAndRevisions()
         testCodePaste()
+        testMathPaste()
         testOverlayRenderer()
         testImagePages()
         testCrispVisibilityPolicy()
@@ -971,6 +972,172 @@ enum SelfTest {
            let png = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) {
             try? png.write(to: url)
             print("Table demo written to \(url.path)")
+        }
+    }
+
+    // MARK: Pasted math
+
+    private static func testMathPaste() {
+        print("Pasted math:")
+        // The user's example.
+        guard let blocks = MathPaste.blocks(in: "$$g(x,y,z) = x^2 + y^2 + z^2 = 81$$") else {
+            check(false, "$$…$$ recognized")
+            return
+        }
+        check(blocks.count == 1 && blocks[0].display, "$$…$$ is one display block")
+        check(blocks[0].lines == ["g(x,y,z) = x^2 + y^2 + z^2 = 81"], "delimiters stripped: \(blocks[0].lines)")
+
+        check(MathPaste.blocks(in: "\\[ \\nabla g = \\langle 2x, 2y, 2z \\rangle \\]")?.first?.display == true, "\\[…\\] recognized")
+        check(MathPaste.blocks(in: "$E = mc^2$")?.first?.display == false, "$…$ is inline")
+        check(MathPaste.blocks(in: "\\(a+b\\)") != nil, "\\(…\\) recognized")
+        check(MathPaste.blocks(in: "\\nabla g = \\langle 2x, 2y, 2z \\rangle") != nil, "bare LaTeX recognized")
+        check(MathPaste.blocks(in: "The gradient points outward from the sphere.") == nil, "prose is never math")
+        check(MathPaste.blocks(in: "h (m)\tPredicted\n0.5\t0.319") == nil, "a pasted table is never math")
+
+        // Multi-line aligned block.
+        let aligned = "\\begin{aligned} f(x) &= x^2 \\\\ f'(x) &= 2x \\end{aligned}"
+        let alignedBlocks = MathPaste.blocks(in: aligned)
+        check(alignedBlocks?.first?.lines.count == 2, "aligned environment splits into lines")
+
+        // Prose with inline math becomes readable text.
+        let prose = MathPaste.proseWithInlineMath("The surface $x^2 + y^2 = 81$ is a cylinder.")
+        check(prose?.contains("x² + y² = 81") == true, "inline math inside a sentence is set in Unicode: \(prose ?? "nil")")
+        check(prose?.hasPrefix("The surface ") == true, "…and the words are kept")
+
+        // Commands chat uses that the parser needed.
+        for command in ["\\langle x \\rangle", "a \\le b", "c \\ne d", "\\mathbb{R}", "\\text{if } x > 0", "\\lVert v \\rVert"] {
+            check(TypesetMath.layout(command, fontSize: 14) != nil, "lays out \(command)")
+        }
+        if let (output, _) = TypesetMath.layout("\\mathbb{R}", fontSize: 14) {
+            check(!output.isEmpty, "ℝ renders")
+        }
+
+        // TeX puts real space around relations and binary operators — the
+        // difference between "looks typeset" and "looks run together".
+        if let (plain, _) = TypesetMath.layout("ab", fontSize: 20),
+           let (relation, _) = TypesetMath.layout("a=b", fontSize: 20),
+           let (binary, _) = TypesetMath.layout("a+b", fontSize: 20) {
+            check(relation.width > plain.width + 15, "relations get thick space")
+            check(binary.width > plain.width + 11, "binary operators get medium space")
+            check(relation.width > binary.width, "relations breathe more than operators")
+        }
+
+        // What a ⌘V turns into.
+        check(PasteRouter.kind(plain: "$$x^2+y^2=81$$", richTextIsCode: true) == .math,
+              "LaTeX copied from a code block still typesets")
+        check(PasteRouter.kind(plain: "echo $HOME $PATH\nls -la", richTextIsCode: false) == .code,
+              "a shell script with $HOME is code, not an equation")
+        check(MathPaste.proseWithInlineMath("Set $HOME before running it.") == nil,
+              "a shell variable in a sentence is left alone")
+        check(MathPaste.proseWithInlineMath("It costs $5 and $7 total.")?.contains("$5") ?? true,
+              "prices are left alone")
+        check(PasteRouter.kind(plain: "h (m)\t0.5\n0.6\t0.7", richTextIsCode: false) == .table,
+              "a spreadsheet paste is still a table")
+        check(PasteRouter.kind(plain: "func f() {\n    return 1;\n}", richTextIsCode: true) == .code,
+              "source is still code")
+        check(PasteRouter.kind(plain: "The surface $x^2+y^2=81$ is a cylinder.", richTextIsCode: false) == .proseWithMath,
+              "a sentence with math stays a sentence")
+        check(PasteRouter.kind(plain: "Just some notes to self.", richTextIsCode: false) == .text,
+              "plain words stay a text box")
+
+        // Real placement on a page.
+        guard let doc = PDFDocument(data: PaperTemplate.blank.pageData()),
+              let page = doc.page(at: 0) else {
+            check(false, "blank doc")
+            return
+        }
+        let placed = Annotations.makeMathBlock(
+            latexLines: blocks[0].lines, fontSize: 20,
+            topLeft: CGPoint(x: 80, y: 700), maxWidth: 450, color: .black
+        )
+        check(placed.count == 1, "one annotation per line")
+        guard let equation = placed.first else { return }
+        check(Annotations.isMathBlock(equation), "tagged as a math block")
+        check(Annotations.isBlockObject(equation), "clickable anywhere inside")
+        check(equation.contents?.contains("x^2") == true, "source kept for later")
+        page.addAnnotation(equation)
+        check(
+            Annotations.preciseHit(at: CGPoint(x: equation.bounds.midX, y: equation.bounds.midY), on: page, tolerance: 1) === equation,
+            "a click in the middle grabs the equation"
+        )
+        if let render = renderGray(page) {
+            var darkest = 255
+            for x in stride(from: Int(equation.bounds.minX), to: Int(equation.bounds.maxX), by: 3) {
+                for y in stride(from: Int(equation.bounds.minY), to: Int(equation.bounds.maxY), by: 3) {
+                    darkest = min(darkest, sample(render, x: x, y: y))
+                }
+            }
+            check(darkest < 128, "equation renders on the page")
+        }
+        // Wide equations shrink to fit instead of running off the page.
+        let narrow = Annotations.makeMathBlock(
+            latexLines: ["\\int_0^\\infty e^{-x^2} dx = \\frac{\\sqrt{\\pi}}{2}"], fontSize: 40,
+            topLeft: CGPoint(x: 80, y: 500), maxWidth: 120, color: .black
+        )
+        check(narrow.first.map { $0.bounds.width <= 140 } == true, "too-wide math shrinks to fit")
+    }
+
+    /// `Inkwell --gap-probe` — prints the blank columns inside a rendered
+    /// equation, so spacing can be checked in pixels instead of by eye.
+    static func gapProbe() {
+        guard let doc = PDFDocument(data: PaperTemplate.blank.pageData()),
+              let page = doc.page(at: 0) else { return }
+        let size: CGFloat = 40
+        guard let annotation = Annotations.makeTypesetMath("x=y+z", fontSize: size, centeredAt: CGPoint(x: 300, y: 400), color: .black) else { return }
+        page.addAnnotation(annotation)
+        guard let render = renderGray(page) else { return }
+        let b = annotation.bounds
+        var runs: [(start: Int, width: Int)] = []
+        var blankStart: Int?
+        for x in Int(b.minX)...Int(b.maxX) {
+            var ink = false
+            for y in stride(from: Int(b.minY), to: Int(b.maxY), by: 1) where sample(render, x: x, y: y) < 160 { ink = true; break }
+            if ink {
+                if let start = blankStart { runs.append((start, x - start)); blankStart = nil }
+            } else if blankStart == nil {
+                blankStart = x
+            }
+        }
+        let inner = runs.filter { $0.width > 1 && $0.start > Int(b.minX) + 2 }
+        print("font \(size)pt — TeX thick space would be \(String(format: "%.1f", 0.278 * size))pt")
+        print("blank gaps inside x=y+z: \(inner.map { "\($0.width)pt@\($0.start)" }.joined(separator: ", "))")
+    }
+
+    /// `Inkwell --math-demo out.png` — pasted-equation rendering.
+    static func mathDemo(to url: URL) {
+        guard let doc = PDFDocument(data: PaperTemplate.blank.pageData()),
+              let page = doc.page(at: 0) else { return }
+        let pastes = [
+            "$$g(x,y,z) = x^2 + y^2 + z^2 = 81$$",
+            "$$\\nabla g = \\langle 2x, 2y, 2z \\rangle$$",
+            "$$\\int_0^\\infty e^{-x^2}\\,dx = \\frac{\\sqrt{\\pi}}{2}$$",
+            "\\begin{aligned} f(x) &= \\frac{1}{2}mv^2 \\\\ v_f &= \\sqrt{2gh} \\end{aligned}",
+        ]
+        var y: CGFloat = 740
+        for paste in pastes {
+            guard let blocks = MathPaste.blocks(in: paste) else { continue }
+            let placed = Annotations.makeMathBlock(
+                latexLines: blocks.flatMap(\.lines), fontSize: 20,
+                topLeft: CGPoint(x: 60, y: y), maxWidth: 480, color: .black
+            )
+            for annotation in placed { page.addAnnotation(annotation) }
+            y = (placed.map { $0.bounds.minY }.min() ?? y) - 26
+        }
+        let scale: CGFloat = 3
+        guard let ctx = CGContext(
+            data: nil, width: Int(560 * scale), height: Int(300 * scale), bitsPerComponent: 8,
+            bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return }
+        ctx.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+        ctx.fill(CGRect(x: 0, y: 0, width: 560 * scale, height: 300 * scale))
+        ctx.scaleBy(x: scale, y: scale)
+        ctx.translateBy(x: -40, y: -470)
+        page.draw(with: .cropBox, to: ctx)
+        if let image = ctx.makeImage(),
+           let png = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) {
+            try? png.write(to: url)
+            print("Math demo written to \(url.path)")
         }
     }
 

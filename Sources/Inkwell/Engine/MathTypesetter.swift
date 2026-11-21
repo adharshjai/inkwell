@@ -181,9 +181,11 @@ enum TypesetMath {
         if case .space = a { return 0 }
         if case .space = b { return 0 }
         let ca = spacingClass(a), cb = spacingClass(b)
-        if ca == .binary || cb == .binary { return 0.19 * size }
-        if ca == .relation || cb == .relation { return 0.26 * size }
-        if ca == .punctuation { return 0.17 * size }
+        // TeX's own quads: medium space (4/18 em) around binary operators,
+        // thick space (5/18 em) around relations, thin (3/18) after commas.
+        if ca == .binary || cb == .binary { return 0.222 * size }
+        if ca == .relation || cb == .relation { return 0.278 * size }
+        if ca == .punctuation { return 0.167 * size }
         // function name followed by argument: sinθ
         if case .symbol(let s, .upright) = a, s.count > 1 { return 0.12 * size }
         return 0.03 * size

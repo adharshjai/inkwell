@@ -152,6 +152,7 @@ final class AppState {
     var document: PDFDocument?
     var documentURL: URL?
     var isDirty = false
+    var lastEditDate: Date?
     /// Bumped on any structural/page change so thumbnails and views refresh.
     var docVersion = 0
 
@@ -495,6 +496,7 @@ final class AppState {
 
     func markDirty() {
         isDirty = true
+        lastEditDate = Date()
     }
 
     func bumpVersion(page: PDFPage? = nil) {

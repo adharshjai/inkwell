@@ -311,6 +311,14 @@ struct MathParser {
         ]
         for (k, v) in relation { m[k] = (v, .relation) }
 
+        let delimiters: [String: String] = [
+            "langle": "⟨", "rangle": "⟩", "lvert": "|", "rvert": "|",
+            "lVert": "‖", "rVert": "‖", "vert": "|", "Vert": "‖",
+            "lfloor": "⌊", "rfloor": "⌋", "lceil": "⌈", "rceil": "⌉",
+            "{": "{", "}": "}", "|": "‖",
+        ]
+        for (k, v) in delimiters { m[k] = (v, .upright) }
+
         let ordinary: [String: String] = [
             "infty": "∞", "partial": "∂", "nabla": "∇", "hbar": "ℏ", "ell": "ℓ",
             "degree": "°", "circ": "°", "prime": "′", "angle": "∠", "triangle": "△",
@@ -319,6 +327,17 @@ struct MathParser {
             "uparrow": "↑", "downarrow": "↓", "bullet": "•", "star": "⋆", "dagger": "†",
         ]
         for (k, v) in ordinary { m[k] = (v, .upright) }
+
+        // Short aliases chat and papers use.
+        m["le"] = ("≤", .relation)
+        m["ge"] = ("≥", .relation)
+        m["ne"] = ("≠", .relation)
+        m["mapsto"] = ("↦", .relation)
+        m["colon"] = (":", .punctuation)
+        m["ldots"] = ("…", .upright)
+        m["dots"] = ("…", .upright)
+        m["cdots"] = ("⋯", .upright)
+        m["infin"] = ("∞", .upright)
         return m
     }()
 
@@ -536,6 +555,14 @@ struct MathParser {
         case "vec", "hat", "bar", "dot", "ddot", "tilde":
             let arg = parseScriptArg(&tokens)
             return .accent(arg, AccentKind(rawValue: name) ?? .bar)
+        case "text", "mathrm", "operatorname", "mathbf", "mathsf", "mathtt", "textbf", "textrm":
+            return restyled(parseScriptArg(&tokens), as: .upright)
+        case "mathit", "mathcal", "textit":
+            return restyled(parseScriptArg(&tokens), as: .variable)
+        case "mathbb":
+            return restyled(blackboard(parseScriptArg(&tokens)), as: .upright)
+        case "limits", "nolimits", "displaystyle", "textstyle", "!":
+            return nil
         case ",", ";", " ":
             return .space(0.18)
         case "quad":
@@ -553,6 +580,31 @@ struct MathParser {
             }
             // Unknown command: show the raw name so the user notices.
             return .symbol("\\" + name, .upright)
+        }
+    }
+
+    /// Rewrites every symbol in a subtree to one style (\text, \mathrm, …).
+    private static func restyled(_ node: MathNode, as style: MathStyle) -> MathNode {
+        switch node {
+        case .symbol(let text, _):
+            return .symbol(text, style)
+        case .row(let items):
+            return .row(items.map { restyled($0, as: style) })
+        default:
+            return node
+        }
+    }
+
+    /// \mathbb{R} → ℝ for the sets that have a Unicode letter.
+    private static func blackboard(_ node: MathNode) -> MathNode {
+        let map: [Character: String] = ["R": "ℝ", "N": "ℕ", "Z": "ℤ", "Q": "ℚ", "C": "ℂ", "P": "ℙ", "H": "ℍ"]
+        switch node {
+        case .symbol(let text, let style):
+            return .symbol(String(text.map { map[$0].map(Character.init) ?? $0 }), style)
+        case .row(let items):
+            return .row(items.map(blackboard))
+        default:
+            return node
         }
     }
 

@@ -2,6 +2,24 @@ import AppKit
 import PDFKit
 import UniformTypeIdentifiers
 
+/// What a ⌘V should become. Math is decided before code so LaTeX copied out
+/// of a chat's code block still typesets; tables are decided before code so a
+/// spreadsheet paste is never mistaken for source.
+enum PasteRouter {
+    enum Kind: Equatable {
+        case math, table, code, proseWithMath, text
+    }
+
+    static func kind(plain: String, richTextIsCode: Bool) -> Kind {
+        if MathPaste.blocks(in: plain) != nil { return .math }
+        if richTextIsCode { return .code }
+        if TableLayout.parse(plain, strict: true) != nil { return .table }
+        if CodeBlock.looksLikeCode(plain) { return .code }
+        if MathPaste.proseWithInlineMath(plain) != nil { return .proseWithMath }
+        return .text
+    }
+}
+
 // MARK: - Document lifecycle & page operations
 
 extension AppState {
@@ -90,6 +108,7 @@ extension AppState {
         document = doc
         documentURL = nil
         isDirty = true
+        lastEditDate = Date()
         currentPageIndex = 0
         clearSearch()
         selectedAnnotations = []
@@ -604,23 +623,30 @@ extension AppState {
         // Something newer than our own copy is on the clipboard: a table
         // (tabs from Sheets/Excel/Numbers, Markdown pipes, CSV) or text.
         let pasteboard = NSPasteboard.general
-        // Code copied from an editor arrives as rich text: keep its colors
-        // and monospaced font rather than flattening it to plain text.
-        if hasDocument, pasteboard.changeCount != ownPasteboardChangeCount,
-           let rich = CodeBlock.attributedText(from: pasteboard),
-           CodeBlock.monospaceRatio(rich) > 0.6,
-           let spec = CodeBlock.spec(from: rich) {
-            placeCode(spec)
-            return
-        }
         if hasDocument, pasteboard.changeCount != ownPasteboardChangeCount,
            let string = pasteboard.string(forType: .string),
            !string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            if let rows = TableLayout.parse(string, strict: true) {
-                placeTable(TableSpec(rows: rows, header: TableLayout.guessHeader(rows), style: .grid))
-            } else if CodeBlock.looksLikeCode(string), let spec = CodeBlock.spec(fromPlain: string) {
-                placeCode(spec)
-            } else {
+            // Code copied from an editor arrives as rich text: keep its colors
+            // and monospaced font rather than flattening it to plain text.
+            let rich = CodeBlock.attributedText(from: pasteboard)
+            let richIsCode = rich.map { CodeBlock.monospaceRatio($0) > 0.6 } ?? false
+            switch PasteRouter.kind(plain: string, richTextIsCode: richIsCode) {
+            case .math:
+                if let blocks = MathPaste.blocks(in: string) { placeMath(blocks) }
+            case .code:
+                if richIsCode, let rich, let spec = CodeBlock.spec(from: rich) {
+                    placeCode(spec)
+                } else if let spec = CodeBlock.spec(fromPlain: string) {
+                    placeCode(spec)
+                }
+            case .table:
+                if let rows = TableLayout.parse(string, strict: true) {
+                    placeTable(TableSpec(rows: rows, header: TableLayout.guessHeader(rows), style: .grid))
+                }
+            case .proseWithMath:
+                // A sentence with $…$ in it: keep the words, set the math.
+                placePastedText(MathPaste.proseWithInlineMath(string) ?? string)
+            case .text:
                 placePastedText(string)
             }
             return
@@ -666,6 +692,36 @@ extension AppState {
         pdfView?.refreshSelectionOverlay()
         Haptics.thunk()
         flash("Table placed — drag to move · corner to resize · double-click to edit", seconds: 3)
+    }
+
+    /// Typesets pasted LaTeX (`$$…$$`, `\\[…\\]`, `$…$`, aligned blocks) at
+    /// the cursor as real math.
+    func placeMath(_ blocks: [MathPaste.Block]) {
+        guard let (page, point) = pasteTarget() else { return }
+        let box = page.bounds(for: .cropBox)
+        let display = blocks.contains { $0.display }
+        let size = min(max(fontSize * (display ? 1.45 : 1.15) / pasteZoom, 6), 60)
+        let lines = blocks.flatMap(\.lines)
+        let placed = Annotations.makeMathBlock(
+            latexLines: lines, fontSize: size, topLeft: point,
+            maxWidth: max(box.maxX - 36 - point.x, 120), color: inkColor,
+            pageRotation: page.rotation
+        )
+        guard !placed.isEmpty else {
+            flash("Couldn’t typeset that — check the LaTeX")
+            return
+        }
+        undoManager?.beginUndoGrouping()
+        for annotation in placed {
+            Annotations.add(annotation, to: page, state: self, actionName: "Paste Equation")
+        }
+        undoManager?.endUndoGrouping()
+        tool = .select
+        selectedAnnotations = placed
+        selectedAnnotationPage = page
+        pdfView?.refreshSelectionOverlay()
+        Haptics.thunk()
+        flash("Equation typeset — \(placed.count) line\(placed.count == 1 ? "" : "s")", seconds: 2.2)
     }
 
     /// Places a pasted code block at the cursor, selected and ready to move.
